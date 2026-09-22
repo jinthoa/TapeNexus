@@ -9,6 +9,10 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to build for (e.g. v1.0.3). Defaults to the pushed tag, or v1.0.3 on manual run."
+        required: false
 
 permissions:
   contents: write
@@ -23,6 +27,21 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          # On a tag push github.ref_name is "v1.0.3". On a manual dispatch it's
+          # the branch name ("main"), so fall back to the input then a default.
+          v="${{ github.event.inputs.version }}"
+          if [ -z "$v" ]; then v="${{ github.ref_name }}"; fi
+          case "$v" in
+            v*) tag="$v" ;;
+            *) tag="v$v" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "resolved tag: $tag"
+
       - name: Install dependencies
         working-directory: windows
         run: |
@@ -33,13 +52,13 @@ jobs:
       - name: Build .exe
         working-directory: windows
         env:
-          TN_VERSION: ${{ github.ref_name }}
+          TN_VERSION: ${{ steps.ver.outputs.tag }}
         run: python build.py
 
       - name: Upload asset to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TN_VERSION: ${{ github.ref_name }}
+          TN_VERSION: ${{ steps.ver.outputs.tag }}
         working-directory: windows
         run: |
           $tag = $env:TN_VERSION
