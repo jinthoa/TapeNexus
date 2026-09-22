@@ -17,7 +17,7 @@ from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
 from .clipboard_monitor import ClipboardMonitor
 from .models import (
-    AppSettings, DownloadItem, extract_urls, format_label,
+    AppSettings, DownloadItem, FormatInfo, ListMode, extract_urls, format_label,
     looks_like_playlist,
 )
 from .yt_dlp_controller import YTDLPController
@@ -133,11 +133,17 @@ class AppState(QObject):
         self.skipped_count = 0
         self.paste_field = ""
         self.filter = "all"
+        # v1.0.4: queue/history mode toggle, search, format-preview state
+        self.list_mode = ListMode.queue
+        self.search_text = ""
+        self.format_lists: Dict[str, list] = {}
+        self.formats_loading: set = set()
+        self.formats_error: Dict[str, str] = {}
 
         self._workers: Dict[str, DownloadWorker] = {}
         self._tray = None
         self._quiet_timer = QTimer(self)
-        self._quiet_timer.timeout.connect(self._evaluate_quiet_hours)
+        self._quiet_timer.timeout.connect(self._quiet_tick)
         self._quiet_active = False
         self._quiet_paused_ids: set = set()
 
@@ -352,6 +358,11 @@ class AppState(QObject):
             self._quiet_paused_ids.clear()
             self.pump()
 
+    def _quiet_tick(self) -> None:
+        self._evaluate_quiet_hours()
+        # Re-pump so items whose scheduled start time just arrived kick off.
+        self.pump()
+
     def pump(self) -> None:
         if self.is_quiet_hour():
             return
@@ -359,7 +370,9 @@ class AppState(QObject):
         slots = max(0, self.settings.max_concurrent - running)
         if slots <= 0:
             return
-        to_start = [it for it in self.items if it.status == "queued"][:slots]
+        # Only start queued items whose scheduled start time (if any) has come.
+        to_start = [it for it in self.items
+                    if it.status == "queued" and it.schedule_ready][:slots]
         for it in to_start:
             self._start(it)
 
@@ -396,11 +409,13 @@ class AppState(QObject):
             self._workers.pop(item_id, None)
             return
         if ok:
-            self.update(item_id, status="done", progress=1.0, error_message="", pid=0)
+            self.update(item_id, status="done", progress=1.0, error_message="", pid=0,
+                        completed_at=datetime.now().isoformat())
             self._persist_queue()
         else:
             if it.status == "downloading":
-                self.update(item_id, status="failed", error_message=err, pid=0)
+                self.update(item_id, status="failed", error_message=err, pid=0,
+                            completed_at=datetime.now().isoformat())
         self._workers.pop(item_id, None)
         # notify
         finished_it = self.item(item_id)
@@ -473,12 +488,50 @@ class AppState(QObject):
         done = [it for it in self.items if it.status in ("done", "stopped", "failed")]
         if not done:
             return
-        # archive to history (reusing the items, with pid cleared)
+        # archive to history (reusing the items, with pid cleared + completion stamp)
         for it in done:
             it.pid = 0
+            if not it.completed_at:
+                it.completed_at = datetime.now().isoformat()
         self.history = (done + self.history)[:500]
         keep_ids = {it.id for it in done}
         self.items = [it for it in self.items if it.id not in keep_ids]
+        self.list_changed.emit()
+        self._persist_queue()
+
+    def retry_all(self) -> None:
+        """Re-queue every failed (and stopped) item in one go."""
+        for it in list(self.items):
+            if it.status in ("failed", "stopped"):
+                self.retry(it.id)
+
+    def redownload(self, item_id: str) -> None:
+        """Re-queue an item from history: drop it back into the live queue with
+        the same URL/metadata so it downloads again. The history entry stays."""
+        h = next((x for x in self.history if x.id == item_id), None)
+        if h is None:
+            return
+        if any(it.url == h.url for it in self.items):
+            return  # already queued
+        import uuid as _uuid
+        c = DownloadItem(
+            id=str(_uuid.uuid4()), url=h.url, title=h.title, uploader=h.uploader,
+            thumbnail=h.thumbnail, duration_str=h.duration_str, status="queued",
+            format_desc=h.format_desc, format_preset=h.format_preset,
+            custom_format=h.custom_format, added_at=datetime.now().isoformat(),
+        )
+        self.items.insert(0, c)
+        self.list_changed.emit()
+        self._persist_queue()
+        self.pump()
+
+    def remove_from_history(self, item_id: str) -> None:
+        self.history = [h for h in self.history if h.id != item_id]
+        self.list_changed.emit()
+        self._persist_queue()
+
+    def clear_history(self) -> None:
+        self.history = []
         self.list_changed.emit()
         self._persist_queue()
 
@@ -546,6 +599,49 @@ class AppState(QObject):
         self.item_changed.emit(item_id)
         self._persist_queue()
 
+    # ── per-item scheduling (v1.0.4) ─────────────────────────────────────────
+    def set_item_schedule(self, item_id: str, start_at: str) -> None:
+        """Schedule a queued item to start no earlier than `start_at` (ISO).
+        Empty string clears it."""
+        it = self.item(item_id)
+        if not it:
+            return
+        it.start_at = start_at
+        self.item_changed.emit(item_id)
+        self._persist_queue()
+        if not start_at:
+            self.pump()
+
+    # ── format preview (v1.0.4) ──────────────────────────────────────────────
+    def load_formats(self, item_id: str) -> None:
+        """Fetch yt-dlp's available-format list for an item's URL (async)."""
+        if item_id in self.formats_loading:
+            return
+        it = self.any_item(item_id)
+        if it is None:
+            return
+        self.formats_loading.add(item_id)
+        self.formats_error[item_id] = ""
+        url = it.url
+
+        def work() -> None:
+            result = self.yt.list_formats(url)
+            QTimer.singleShot(0, lambda: self._on_formats_done(item_id, result))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_formats_done(self, item_id: str, result) -> None:
+        self.formats_loading.discard(item_id)
+        if result:
+            self.format_lists[item_id] = result
+            self.formats_error[item_id] = ""
+        else:
+            self.formats_error[item_id] = "Couldn't load formats for this link."
+        self.item_changed.emit(item_id)
+
+    def apply_format(self, f: FormatInfo, item_id: str) -> None:
+        self.set_item_format(item_id, "custom", f.format_arg)
+
     # ── settings ────────────────────────────────────────────────────────────
     def update_settings(self, s: AppSettings) -> None:
         self.settings = s
@@ -564,8 +660,31 @@ class AppState(QObject):
             "done": "done", "failed": "failed", "stopped": "failed",
         }
         if self.filter == "all":
-            return list(self.items)
-        return [it for it in self.items if bucket.get(it.status) == self.filter]
+            base = list(self.items)
+        else:
+            base = [it for it in self.items if bucket.get(it.status) == self.filter]
+        if self.search_text:
+            base = [it for it in base if self._matches_search(it)]
+        return base
+
+    def filtered_history(self) -> List[DownloadItem]:
+        if not self.search_text:
+            return list(self.history)
+        return [it for it in self.history if self._matches_search(it)]
+
+    def _matches_search(self, it: DownloadItem) -> bool:
+        q = self.search_text.lower()
+        if not q:
+            return True
+        if q in it.title.lower():
+            return True
+        if q in it.host.lower():
+            return True
+        if q in it.url.lower():
+            return True
+        if q in (it.uploader or "").lower():
+            return True
+        return False
 
     def count_for(self, f: str) -> int:
         prev = self.filter

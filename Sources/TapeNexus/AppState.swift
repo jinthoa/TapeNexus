@@ -8,12 +8,19 @@ final class AppState: ObservableObject {
     @Published var history: [DownloadItem] = []
     @Published var settings: AppSettings
     @Published var filter: StatusFilter = .all
+    @Published var listMode: ListMode = .queue
+    @Published var searchText: String = ""
     @Published var showSettings: Bool = false
     @Published var updateStatus = UpdateStatus()
     @Published var appUpdateStatus = AppUpdateStatus()
     @Published var skippedCount: Int = 0
     @Published var lastLog: [UUID: [String]] = [:]
     @Published var pasteField: String = ""
+
+    // v1.0.4: format preview (--list-formats) state, keyed by item id.
+    @Published var formatLists: [UUID: [FormatInfo]] = [:]
+    @Published var formatsLoading: Set<UUID> = []
+    @Published var formatsError: [UUID: String] = [:]
 
     let store: SettingsStore
     let yt: YTDLPController
@@ -125,7 +132,11 @@ final class AppState: ObservableObject {
     }
 
     func archiveToHistory(_ done: [DownloadItem]) {
-        history.insert(contentsOf: done.map { var c = $0; c.pid = 0; return c }, at: 0)
+        history.insert(contentsOf: done.map {
+            var c = $0; c.pid = 0
+            if c.completedAt == nil { c.completedAt = Date() }
+            return c
+        }, at: 0)
         if history.count > 500 { history.removeLast(history.count - 500) }
         let ids = Set(done.map { $0.id })
         items.removeAll { ids.contains($0.id) }
@@ -259,12 +270,25 @@ final class AppState: ObservableObject {
     func resume(_ id: UUID) { downloads.resume(id) }
     func stop(_ id: UUID) { downloads.stop(id) }
     func retry(_ id: UUID) { downloads.retry(id) }
+    func retryAll() { downloads.retryAll() }
     func startNow(_ id: UUID) { downloads.startNow(id) }
     func pauseAll() { downloads.pauseAll() }
     func resumeAll() { downloads.resumeAll() }
     func clearFinished() { downloads.clearFinished() }
     func remove(_ id: UUID) { downloads.remove(id) }
     func deleteFile(_ id: UUID) { downloads.deleteFile(id) }
+    /// Re-download an item from the history archive.
+    func redownload(_ id: UUID) { downloads.redownload(id) }
+    /// Remove a single item from history (keeps the downloaded file).
+    func removeFromHistory(_ id: UUID) {
+        history.removeAll { $0.id == id }
+        persist()
+    }
+    /// Empty the whole history archive (does not touch downloaded files).
+    func clearHistory() {
+        history.removeAll()
+        persist()
+    }
 
     func reveal(_ id: UUID) {
         guard let p = anyItem(id)?.outputFilePath, !p.isEmpty else { return }
@@ -318,6 +342,46 @@ final class AppState: ObservableObject {
         persist()
     }
 
+    // MARK: - Per-item scheduling (v1.0.4)
+
+    /// Schedule a queued item to start no earlier than `startAt`. nil clears it.
+    func setItemSchedule(_ id: UUID, startAt: Date?) {
+        update(id) { $0.startAt = startAt }
+        persist()
+        if startAt == nil { downloads.pump() }
+    }
+
+    // MARK: - Format preview (v1.0.4)
+
+    /// Fetch yt-dlp's available-format list for an item's URL (async). The
+    /// result lands in `formatLists[id]`; failures land in `formatsError[id]`.
+    func loadFormats(for id: UUID) {
+        guard let item = anyItem(id) else { return }
+        if formatsLoading.contains(id) { return }
+        formatsLoading.insert(id)
+        formatsError[id] = ""
+        let ytRef = yt
+        let url = item.url
+        DispatchQueue.global().async { [weak self] in
+            let result = ytRef.listFormats(url)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.formatsLoading.remove(id)
+                if let result = result, !result.isEmpty {
+                    self.formatLists[id] = result
+                    self.formatsError[id] = ""
+                } else {
+                    self.formatsError[id] = "Couldn't load formats for this link."
+                }
+            }
+        }
+    }
+
+    /// Apply a chosen format row to an item as a custom -f override.
+    func applyFormat(_ f: FormatInfo, to id: UUID) {
+        setItemFormat(id, preset: "custom", custom: f.formatArg)
+    }
+
     // MARK: - Dock badge + notifications
 
     /// Reflect the active download count on the Dock icon (no-op in menu-bar
@@ -347,7 +411,11 @@ final class AppState: ObservableObject {
     private func startQuietTimer() {
         let t = DispatchSource.makeTimerSource(queue: .main)
         t.schedule(deadline: .now() + 60, repeating: 60)
-        t.setEventHandler { [weak self] in self?.evaluateQuietHours() }
+        t.setEventHandler { [weak self] in
+            self?.evaluateQuietHours()
+            // Re-pump so items whose scheduled start time just arrived kick off.
+            self?.downloads.pump()
+        }
         t.resume()
         quietTimer = t
         evaluateQuietHours()
@@ -382,12 +450,29 @@ final class AppState: ObservableObject {
     /// Items visible under the current segmented filter. The list is the single
     /// `items` array — done/failed stay in it until "Clear done" archives them.
     var filteredItems: [DownloadItem] {
+        let bucketed: [DownloadItem]
         switch filter {
-        case .all: return items
-        case .active: return items.filter { $0.status.filterBucket == .active }
-        case .done: return items.filter { $0.status.filterBucket == .done }
-        case .failed: return items.filter { $0.status.filterBucket == .failed }
+        case .all: bucketed = items
+        case .active: bucketed = items.filter { $0.status.filterBucket == .active }
+        case .done: bucketed = items.filter { $0.status.filterBucket == .done }
+        case .failed: bucketed = items.filter { $0.status.filterBucket == .failed }
         }
+        return searchText.isEmpty ? bucketed : bucketed.filter { matchesSearch($0) }
+    }
+
+    /// History entries filtered by the current search text.
+    var filteredHistory: [DownloadItem] {
+        searchText.isEmpty ? history : history.filter { matchesSearch($0) }
+    }
+
+    private func matchesSearch(_ item: DownloadItem) -> Bool {
+        let q = searchText.lowercased()
+        if q.isEmpty { return true }
+        if item.title.lowercased().contains(q) { return true }
+        if item.host.lowercased().contains(q) { return true }
+        if item.url.lowercased().contains(q) { return true }
+        if item.uploader.lowercased().contains(q) { return true }
+        return false
     }
 
     func count(for f: StatusFilter) -> Int {

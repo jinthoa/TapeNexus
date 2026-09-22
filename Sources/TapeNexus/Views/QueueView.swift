@@ -1,18 +1,25 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The whole single-page UI: brand strip + paste field, a segmented
-/// All/Active/Done/Failed filter with live counts, a toolbar of status chips,
-/// and the unified download list (done/failed stay in the list, filtered).
+/// The whole single-page UI. A top-level Queue | History segmented control
+/// switches between the live download list and the searchable archive. The
+/// queue side keeps its All/Active/Done/Failed filter; the history side is a
+/// flat, searchable list with re-download / reveal / delete actions.
 struct QueueView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            filterBar
+            modeBar
             Divider().overlay(Theme.line)
-            list
+            if state.listMode == .queue {
+                filterBar
+                Divider().overlay(Theme.line)
+                queueList
+            } else {
+                historyList
+            }
         }
         .onDrop(of: [UTType.text, UTType.url, UTType.fileURL],
                 delegate: URLDropDelegate(state: state))
@@ -74,6 +81,65 @@ struct QueueView: View {
         }
     }
 
+    // MARK: Mode bar — Queue | History + search + bulk actions
+
+    private var modeBar: some View {
+        HStack(spacing: 10) {
+            Picker("", selection: $state.listMode) {
+                ForEach(ListMode.allCases) { m in
+                    let count = m == .queue ? state.items.count : state.history.count
+                    Text("\(m.label) · \(count)").tag(m)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 180)
+            .labelsHidden()
+
+            searchField
+
+            Spacer()
+
+            if state.listMode == .queue {
+                Button(action: { state.retryAll() }) {
+                    Label("Retry all", systemImage: "arrow.clockwise").font(.system(size: 12))
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .disabled(state.count(for: .failed) == 0)
+                Button(action: { state.clearFinished() }) {
+                    Label("Clear done", systemImage: "checkmark.broom").font(.system(size: 12))
+                }.buttonStyle(.bordered).controlSize(.small)
+                Button(action: { state.pauseAll() }) {
+                    Label("Pause all", systemImage: "pause.fill").font(.system(size: 12))
+                }.buttonStyle(.bordered).controlSize(.small)
+            } else {
+                Button(action: { state.clearHistory() }) {
+                    Label("Clear history", systemImage: "trash").font(.system(size: 12))
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .disabled(state.history.isEmpty)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 9)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
+            TextField("Search title, host, URL…", text: $state.searchText)
+                .textFieldStyle(.plain).font(.system(size: 12))
+            if !state.searchText.isEmpty {
+                Button { state.searchText = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted)
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 11).padding(.vertical, 6)
+        .background(Theme.panel)
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line))
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .frame(width: 280)
+    }
+
     // MARK: Filter bar — segmented All/Active/Done/Failed + status chips
 
     private var filterBar: some View {
@@ -105,19 +171,13 @@ struct QueueView: View {
                     Text("auto-grab").foregroundStyle(Theme.muted)
                 }.chipStyle()
             }
-            Button(action: { state.clearFinished() }) {
-                Label("Clear done", systemImage: "checkmark.broom").font(.system(size: 12))
-            }.buttonStyle(.bordered).controlSize(.small)
-            Button(action: { state.pauseAll() }) {
-                Label("Pause all", systemImage: "pause.fill").font(.system(size: 12))
-            }.buttonStyle(.bordered).controlSize(.small)
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
     }
 
-    // MARK: List
+    // MARK: Queue list
 
-    @ViewBuilder private var list: some View {
+    @ViewBuilder private var queueList: some View {
         if state.items.isEmpty {
             EmptyState(icon: "arrow.down.circle", title: "Nothing here yet",
                        message: "Copy a video URL anywhere — supported links are added automatically. Or paste one above.")
@@ -137,6 +197,27 @@ struct QueueView: View {
         }
     }
 
+    // MARK: History list
+
+    @ViewBuilder private var historyList: some View {
+        if state.history.isEmpty {
+            EmptyState(icon: "clock.arrow.circlepath", title: "No history yet",
+                       message: "Finished downloads collect here after you click “Clear done”. Search and re-download any of them.")
+        } else if state.filteredHistory.isEmpty {
+            EmptyState(icon: "magnifyingglass", title: "No matches",
+                       message: "Nothing in history matches “\(state.searchText)”.")
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 9) {
+                    ForEach(state.filteredHistory) { item in
+                        HistoryRow(item: item)
+                    }
+                }
+                .padding(14)
+            }
+        }
+    }
+
     private var filterIcon: String {
         switch state.filter {
         case .all: return "tray"
@@ -149,7 +230,7 @@ struct QueueView: View {
         switch state.filter {
         case .all: return "Items you add will appear here."
         case .active: return "No downloads are running or queued."
-        case .done: return "Completed downloads show up here. Use “Clear done” to tidy them away."
+        case .done: return "Completed downloads show up here. Use “Clear done” to archive them to History."
         case .failed: return "Nothing has failed. Failed and stopped downloads collect here."
         }
     }
@@ -161,6 +242,9 @@ struct QueueRow: View {
     @State private var clipStart: String = ""
     @State private var clipEnd: String = ""
     @State private var showClip: Bool = false
+    @State private var showSchedule: Bool = false
+    @State private var scheduleDate: Date = Date()
+    @State private var showFormats: Bool = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -183,6 +267,10 @@ struct QueueRow: View {
                     if !item.formatDesc.isEmpty { Chip(text: item.formatDesc) }
                     if item.hasClip {
                         Chip(text: "clip \(clipRangeLabel)")
+                    }
+                    if item.hasSchedule, let s = item.startAt {
+                        Chip(text: "starts \(s.formatted(date: .abbreviated, time: .shortened))",
+                             color: Theme.accent)
                     }
                     if item.status == .downloading && item.totalBytes == 0 {
                         // yt-dlp re-extracts metadata before the first byte transfers;
@@ -222,7 +310,10 @@ struct QueueRow: View {
         .background(Theme.panel)
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line))
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .onAppear { clipStart = item.clipStart; clipEnd = item.clipEnd }
+        .onAppear { clipStart = item.clipStart; clipEnd = item.clipEnd; scheduleDate = item.startAt ?? Date().addingTimeInterval(60 * 60) }
+        .sheet(isPresented: $showFormats) {
+            FormatsSheet(item: item)
+        }
     }
 
     private var percentLabel: String {
@@ -247,6 +338,8 @@ struct QueueRow: View {
             ForEach(AppSettings.formatPresets, id: \.key) { p in
                 Button(p.label) { state.setItemFormat(item.id, preset: p.key, custom: "") }
             }
+            Divider()
+            Button("Show available formats…") { state.loadFormats(for: item.id); showFormats = true }
         } label: {
             Label(item.formatPreset.isEmpty ? "Format" : "Format ✓",
                   systemImage: "slider.horizontal.3")
@@ -290,6 +383,38 @@ struct QueueRow: View {
         }
     }
 
+    /// Scheduled-start editor presented as a popover.
+    private var scheduleButton: some View {
+        Button(action: { showSchedule = true }) {
+            Label("Schedule", systemImage: "calendar")
+                .font(.system(size: 11)).labelStyle(.titleAndIcon)
+        }.buttonStyle(.borderless).popover(isPresented: $showSchedule, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Start later").font(.system(size: 12, weight: .semibold))
+                DatePicker("Start at", selection: $scheduleDate,
+                           in: Date()..., displayedComponents: [.date, .hourAndMinute])
+                    .datePickerStyle(.compact)
+                    .labelsHidden()
+                    .environment(\.locale, Locale.current)
+                Text("The download won't begin until this time. Quiet hours still apply.")
+                    .font(.system(size: 10)).foregroundStyle(Theme.muted).frame(width: 240)
+                HStack {
+                    if item.hasSchedule {
+                        Button("Clear") {
+                            state.setItemSchedule(item.id, startAt: nil)
+                            showSchedule = false
+                        }.buttonStyle(.bordered).controlSize(.small)
+                    }
+                    Spacer()
+                    Button("Schedule") {
+                        state.setItemSchedule(item.id, startAt: scheduleDate)
+                        showSchedule = false
+                    }.buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent)
+                }
+            }.padding(14).frame(width: 260)
+        }
+    }
+
     private func commitClip() {
         state.setItemClip(item.id,
                           start: clipStart.trimmingCharacters(in: .whitespaces),
@@ -313,6 +438,7 @@ struct QueueRow: View {
                 case .queued:
                     formatMenu
                     clipButton
+                    scheduleButton
                     IconButton(system: "play.fill", help: "Start now", tint: Theme.ok) { state.startNow(item.id) }
                     IconButton(system: "xmark", help: "Remove", tint: Theme.err) { state.remove(item.id) }
                 case .failed, .stopped:
@@ -328,6 +454,152 @@ struct QueueRow: View {
                     IconButton(system: "xmark", help: "Remove from list", tint: Theme.muted) { state.remove(item.id) }
                 }
             }
+        }
+    }
+}
+
+/// A row in the History archive: thumbnail, metadata, completion time, and
+/// re-download / reveal / delete actions.
+struct HistoryRow: View {
+    @EnvironmentObject var state: AppState
+    let item: DownloadItem
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ThumbView(url: item.thumbnailURL, duration: item.durationStr)
+                .frame(width: 132, height: 74)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(item.displayTitle).font(.system(size: 13.5, weight: .semibold))
+                    .lineLimit(1).foregroundStyle(Theme.text)
+                HStack(spacing: 7) {
+                    Text(item.host).foregroundStyle(Theme.muted)
+                    if !item.uploader.isEmpty {
+                        Text("·").foregroundStyle(Theme.muted)
+                        Text(item.uploader).foregroundStyle(Theme.muted)
+                    }
+                }.font(.system(size: 11.5)).lineLimit(1)
+
+                HStack(spacing: 8) {
+                    StatusBadge(status: item.status)
+                    if !item.formatDesc.isEmpty { Chip(text: item.formatDesc) }
+                    if let c = item.completedAt {
+                        Label(c.formatted(date: .abbreviated, time: .shortened),
+                              systemImage: "clock")
+                            .font(.system(size: 10.5)).foregroundStyle(Theme.muted)
+                    }
+                    if !item.outputFilePath.isEmpty {
+                        Label(item.outputFilePath.components(separatedBy: "/").last ?? "",
+                              systemImage: "doc")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(Theme.muted).lineLimit(1)
+                    }
+                }
+            }
+            Spacer()
+
+            HStack(spacing: 5) {
+                IconButton(system: "arrow.clockwise", help: "Re-download", tint: Theme.ok) { state.redownload(item.id) }
+                IconButton(system: "folder", help: "Reveal in Finder", tint: Theme.accent2) { state.reveal(item.id) }
+                IconButton(system: "trash", help: "Delete file", tint: Theme.err) { state.deleteFile(item.id) }
+                IconButton(system: "xmark", help: "Remove from history", tint: Theme.muted) { state.removeFromHistory(item.id) }
+            }
+        }
+        .padding(12)
+        .background(Theme.panel)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+/// Format-preview sheet: runs `yt-dlp -F` for the item's URL and shows the
+/// available streams so the user can pick an exact format_id instead of
+/// guessing with a preset. Picking a row applies it as a custom -f override.
+struct FormatsSheet: View {
+    @EnvironmentObject var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    let item: DownloadItem
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Available formats").font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 16)).foregroundStyle(Theme.muted)
+                }.buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            Divider().overlay(Theme.line)
+
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider().overlay(Theme.line)
+            HStack {
+                Text(item.displayTitle).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
+                Spacer()
+                Button("Done") { dismiss() }.buttonStyle(.bordered).controlSize(.small)
+            }.padding(.horizontal, 16).padding(.vertical, 10)
+        }
+        .frame(width: 560, height: 460)
+        .background(Theme.bg)
+        .onAppear { if state.formatLists[item.id] == nil { state.loadFormats(for: item.id) } }
+    }
+
+    @ViewBuilder private var content: some View {
+        if state.formatsLoading.contains(item.id) {
+            VStack(spacing: 12) {
+                ProgressView().controlSize(.large)
+                Text("Asking yt-dlp for available formats…").font(.system(size: 12)).foregroundStyle(Theme.muted)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let err = state.formatsError[item.id], !err.isEmpty {
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle").font(.system(size: 30)).foregroundStyle(Theme.err)
+                Text(err).font(.system(size: 12)).foregroundStyle(Theme.muted).multilineTextAlignment(.center)
+                Button("Try again") { state.loadFormats(for: item.id) }.buttonStyle(.bordered).controlSize(.small)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let rows = state.formatLists[item.id] {
+            ScrollView {
+                VStack(spacing: 4) {
+                    ForEach(rows) { f in
+                        Button {
+                            state.applyFormat(f, to: item.id)
+                            dismiss()
+                        } label: {
+                            HStack {
+                                Text(f.id).font(.system(size: 11, design: .monospaced))
+                                    .frame(width: 70, alignment: .leading)
+                                    .foregroundStyle(Theme.accent2)
+                                Text(f.ext).font(.system(size: 11, design: .monospaced))
+                                    .frame(width: 56, alignment: .leading)
+                                    .foregroundStyle(Theme.text)
+                                Text(f.resolution.isEmpty ? "audio" : f.resolution)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .frame(width: 110, alignment: .leading)
+                                    .foregroundStyle(Theme.text)
+                                Text(f.tbr).font(.system(size: 11, design: .monospaced))
+                                    .frame(width: 64, alignment: .leading)
+                                    .foregroundStyle(Theme.muted)
+                                Text(f.sizeStr).font(.system(size: 11, design: .monospaced))
+                                    .frame(width: 80, alignment: .leading)
+                                    .foregroundStyle(Theme.muted)
+                                Spacer()
+                                Text(f.kindLabel).font(.system(size: 10))
+                                    .foregroundStyle(f.kind == .mixed ? Theme.ok : Theme.muted)
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(Theme.panel)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }.padding(12)
+            }
+        } else {
+            Color.clear.onAppear { state.loadFormats(for: item.id) }
         }
     }
 }

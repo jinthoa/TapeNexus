@@ -56,6 +56,10 @@ struct DownloadItem: Identifiable, Codable, Hashable {
     var clipStart: String = ""       // free-text timestamp e.g. "1:23" or "83"
     var clipEnd: String = ""
 
+    // v1.0.4: scheduling + history.
+    var startAt: Date? = nil         // queued item won't start until this time (nil = now)
+    var completedAt: Date? = nil     // set when the item finishes (done/failed/stopped)
+
     // transient (not Codable)
     var pid: pid_t = 0
 
@@ -63,7 +67,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         case id, url, title, uploader, thumbnailURL, durationStr, status,
              progress, speedStr, etaStr, formatDesc, errorMessage,
              downloadedBytes, totalBytes, outputFilePath, addedAt, pausedByUser,
-             formatPreset, customFormat, clipStart, clipEnd
+             formatPreset, customFormat, clipStart, clipEnd,
+             startAt, completedAt
     }
 
     init(id: UUID = UUID(), url: String, title: String = "", uploader: String = "",
@@ -73,7 +78,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
          errorMessage: String = "", downloadedBytes: Int64 = 0, totalBytes: Int64 = 0,
          outputFilePath: String = "", addedAt: Date = Date(), pausedByUser: Bool = false,
          formatPreset: String = "", customFormat: String = "",
-         clipStart: String = "", clipEnd: String = "") {
+         clipStart: String = "", clipEnd: String = "",
+         startAt: Date? = nil, completedAt: Date? = nil) {
         self.id = id; self.url = url; self.title = title; self.uploader = uploader
         self.thumbnailURL = thumbnailURL; self.durationStr = durationStr
         self.status = status; self.progress = progress; self.speedStr = speedStr
@@ -83,6 +89,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         self.addedAt = addedAt; self.pausedByUser = pausedByUser
         self.formatPreset = formatPreset; self.customFormat = customFormat
         self.clipStart = clipStart; self.clipEnd = clipEnd
+        self.startAt = startAt; self.completedAt = completedAt
     }
 
     private init(fromCore dec: Decoder) throws {
@@ -108,6 +115,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         customFormat = try c.decodeIfPresent(String.self, forKey: .customFormat) ?? ""
         clipStart = try c.decodeIfPresent(String.self, forKey: .clipStart) ?? ""
         clipEnd = try c.decodeIfPresent(String.self, forKey: .clipEnd) ?? ""
+        startAt = try c.decodeIfPresent(Date.self, forKey: .startAt)
+        completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
     }
     init(from decoder: Decoder) throws { try self.init(fromCore: decoder) }
 
@@ -124,6 +133,55 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         return d.isEmpty ? "—" : d
     }
     var hasClip: Bool { !clipStart.isEmpty || !clipEnd.isEmpty }
+    var hasSchedule: Bool { startAt != nil }
+    /// True if a scheduled start time has been reached (or was never set).
+    var scheduleReady: Bool {
+        guard let s = startAt else { return true }
+        return s <= Date()
+    }
+}
+
+/// Top-level view switch between the live queue and the history archive.
+enum ListMode: String, CaseIterable, Identifiable {
+    case queue, history
+    var id: String { rawValue }
+    var label: String { self == .queue ? "Queue" : "History" }
+}
+
+/// One row of `yt-dlp --list-formats` output, parsed for the format preview.
+struct FormatInfo: Identifiable, Hashable {
+    enum Kind: String { case video, audio, mixed }
+    let id: String          // yt-dlp format_id
+    let ext: String
+    let resolution: String  // e.g. "1920x1080" or "" for audio-only
+    let sizeStr: String     // human filesize, e.g. "~1.73GiB" or ""
+    let tbr: String         // bitrate, e.g. "1866k" or ""
+    let kind: Kind
+
+    var kindLabel: String {
+        switch kind {
+        case .video: return "video only"
+        case .audio: return "audio only"
+        case .mixed: return "audio+video"
+        }
+    }
+    var summary: String {
+        var parts: [String] = []
+        if !resolution.isEmpty { parts.append(resolution) }
+        if !ext.isEmpty { parts.append(ext) }
+        if !tbr.isEmpty { parts.append(tbr) }
+        if parts.isEmpty { return id }
+        return parts.joined(separator: " · ")
+    }
+
+    /// -f string to pass to yt-dlp for this row. Video-only formats get
+    /// bestaudio merged in (yt-dlp falls back to /best otherwise).
+    var formatArg: String {
+        switch kind {
+        case .video: return "\(id)+bestaudio/best"
+        case .audio, .mixed: return id
+        }
+    }
 }
 
 struct AppSettings: Codable, Equatable {

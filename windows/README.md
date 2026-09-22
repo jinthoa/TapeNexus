@@ -49,13 +49,21 @@ The `.github/workflows/build-windows.yml` workflow builds the `.exe` on
 attaches the single `.exe` to that release. So the Windows binary is produced
 without anyone needing a Windows machine locally.
 
-## Feature parity with v1.0.3 (macOS)
+## Feature parity with v1.0.4 (macOS)
 
 - Clipboard auto-grab + paste + drag-and-drop (URLs or a `.txt` file)
+- Queue + **History** two-tab view with live counts and search across title /
+  channel / host / URL; re-download, reveal, or remove history entries; **Retry
+  all** re-queues every failed/stopped item in one click
 - Queue with All / Active / Done / Failed filter, live progress, speed, ETA
 - Per-item pause / resume / stop / retry / reveal / remove / delete file
   (pause/resume use `psutil` process suspend/resume — Windows has no SIGSTOP)
 - Per-item format picker + time-range clip editor on queued rows
+- **Format preview** — "Show available formats…" runs `--list-formats` and lists
+  every resolution / bitrate / size the link offers; picking one applies it as a
+  custom `-f`
+- **Per-item scheduling** — schedule a queued item to start at a later time, on
+  top of global quiet hours; the scheduler re-checks every minute
 - Format presets incl. **Audio only (MP3)** (`--extract-audio --audio-format mp3`)
 - Cookies from browser, playlist expansion, per-host organization, subtitle
   language picker, quiet hours, completion notifications (tray), system-tray icon

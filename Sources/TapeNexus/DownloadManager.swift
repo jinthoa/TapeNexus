@@ -25,7 +25,8 @@ final class DownloadManager {
         let limit = settings().maxConcurrent
         let slots = max(0, limit - running)
         guard slots > 0 else { return }
-        let toStart = state.items.filter { $0.status == .queued }.prefix(slots)
+        // Only start queued items whose scheduled start time (if any) has come.
+        let toStart = state.items.filter { $0.status == .queued && $0.scheduleReady }.prefix(slots)
         for item in toStart {
             start(item)
         }
@@ -62,6 +63,7 @@ final class DownloadManager {
                         }
                     }
                     $0.pid = 0
+                    if $0.status == .done || $0.status == .failed { $0.completedAt = Date() }
                 }
                 if ok { state.persist() }
                 // Notify + dock badge (only for genuinely terminal outcomes).
@@ -119,6 +121,29 @@ final class DownloadManager {
             $0.speedStr = ""; $0.etaStr = ""; $0.downloadedBytes = 0
             $0.totalBytes = 0; $0.pid = 0
         }
+        state.persist()
+        pump()
+    }
+
+    /// Re-queue every failed (and stopped) item in one go.
+    func retryAll() {
+        guard let state = state else { return }
+        let ids = state.items.filter { $0.status == .failed || $0.status == .stopped }.map { $0.id }
+        for id in ids { retry(id) }
+    }
+
+    /// Re-queue an item from history: drop it back into the live queue with the
+    /// same URL/metadata so it downloads again. The history entry is preserved.
+    func redownload(_ id: UUID) {
+        guard let state = state, let h = state.history.first(where: { $0.id == id }) else { return }
+        if state.items.contains(where: { $0.url == h.url }) { return } // already queued
+        var c = h
+        c.id = UUID()
+        c.status = .queued
+        c.progress = 0; c.errorMessage = ""; c.speedStr = ""; c.etaStr = ""
+        c.downloadedBytes = 0; c.totalBytes = 0; c.pid = 0
+        c.outputFilePath = ""; c.completedAt = nil; c.startAt = nil
+        state.items.insert(c, at: 0)
         state.persist()
         pump()
     }

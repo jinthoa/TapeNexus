@@ -94,6 +94,9 @@ class DownloadItem:
     custom_format: str = ""
     clip_start: str = ""
     clip_end: str = ""
+    # v1.0.4: per-item scheduling + completion timestamp (ISO strings, "" = none)
+    start_at: str = ""
+    completed_at: str = ""
 
     # transient (not persisted)
     pid: int = 0
@@ -123,6 +126,20 @@ class DownloadItem:
     @property
     def has_clip(self) -> bool:
         return bool(self.clip_start or self.clip_end)
+
+    @property
+    def has_schedule(self) -> bool:
+        return bool(self.start_at)
+
+    @property
+    def schedule_ready(self) -> bool:
+        """True if no schedule is set, or the scheduled start time has passed."""
+        if not self.start_at:
+            return True
+        try:
+            return datetime.fromisoformat(self.start_at) <= datetime.now()
+        except Exception:
+            return True
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -208,3 +225,44 @@ def looks_supported(raw: str) -> bool:
 def looks_like_playlist(url: str) -> bool:
     l = (url or "").lower()
     return "list=" in l or "/playlist" in l or "playlist?" in l
+
+
+# ── v1.0.4: list mode + format preview ──────────────────────────────────────
+
+
+class ListMode(str, Enum):
+    queue = "queue"
+    history = "history"
+
+
+@dataclass
+class FormatInfo:
+    """One row of yt-dlp's --list-formats output, parsed for the preview picker."""
+    id: str
+    ext: str
+    resolution: str = ""
+    size_str: str = ""
+    tbr: str = ""
+    kind: str = "mixed"  # "video" | "audio" | "mixed"
+
+    @property
+    def kind_label(self) -> str:
+        return {"video": "video", "audio": "audio", "mixed": "mixed"}.get(self.kind, self.kind)
+
+    @property
+    def summary(self) -> str:
+        parts = [self.id, self.ext]
+        if self.resolution:
+            parts.append(self.resolution)
+        if self.tbr:
+            parts.append(self.tbr)
+        if self.size_str:
+            parts.append(self.size_str)
+        return " · ".join(p for p in parts if p)
+
+    @property
+    def format_arg(self) -> str:
+        # video-only format → merge with bestaudio; audio/mixed → use as-is
+        if self.kind == "video":
+            return f"{self.id}+bestaudio/best"
+        return self.id

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -165,6 +166,69 @@ class YTDLPController:
         if not entries:
             return None
         return entries[: max(1, cap)]
+
+    def list_formats(self, url: str):
+        """Run yt-dlp -F and parse the format table into FormatInfo rows.
+
+        Returns a list of FormatInfo, or None on failure. yt-dlp prints the
+        table to stderr; columns are pipe-separated (ID EXT RESOLUTION FPS
+        VIDEO│ FILESIZE TBR PROTO │ codecs). "video only"/"audio only" suffix
+        marks stream kind.
+        """
+        from .models import FormatInfo
+        code, out, err = self._run(["-F", "--no-playlist", "--no-warnings", url], timeout=40)
+        combined = (err or "") + "\n" + (out or "")
+        if code != 0 and not combined:
+            return None
+        rows: List[FormatInfo] = []
+        started = False
+        for line in combined.splitlines():
+            if "ID" in line and "EXT" in line and "RESOLUTION" in line:
+                started = True
+                continue
+            if not started:
+                continue
+            f = self._parse_format_line(line)
+            if f:
+                rows.append(f)
+        return rows if rows else None
+
+    @staticmethod
+    def _parse_format_line(line: str):
+        from .models import FormatInfo
+        s = line.strip()
+        if not s or s.startswith("["):
+            return None
+        parts = [p.strip() for p in s.split("│")]
+        if len(parts) < 2:
+            return None
+        left = [p for p in parts[0].split() if p]
+        if len(left) < 2:
+            return None
+        fid = left[0]
+        ext = left[1]
+        # kind detection: "audio only"/"video only" suffix or an "audio" token
+        tail = parts[-1].lower()
+        if "audio only" in tail or (len(left) > 2 and left[2] == "audio"):
+            kind = "audio"
+        elif "video only" in tail:
+            kind = "video"
+        else:
+            kind = "mixed"
+        resolution = left[2] if len(left) > 2 and left[2] not in ("audio", "video") else ""
+        # right column: filesize + tbr
+        right = parts[1].split() if len(parts) > 1 else []
+        size_str = ""
+        tbr = ""
+        _size_re = re.compile(r"^\d+(\.\d+)?[KMG]i?B$")
+        _tbr_re = re.compile(r"^\d+[kK]$")
+        for tok in right:
+            if not size_str and _size_re.match(tok):
+                size_str = tok
+            elif not tbr and _tbr_re.match(tok):
+                tbr = tok
+        return FormatInfo(id=fid, ext=ext, resolution=resolution,
+                          size_str=size_str, tbr=tbr, kind=kind)
 
     # ── download args ──────────────────────────────────────────────────────────
     def build_args(self, item: DownloadItem, settings: AppSettings) -> List[str]:

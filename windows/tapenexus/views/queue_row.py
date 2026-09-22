@@ -1,6 +1,7 @@
 """A single download row: thumbnail, metadata, progress, and per-item controls."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 from PySide6.QtCore import Qt, QUrl, QSize
@@ -9,6 +10,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRe
 from PySide6.QtWidgets import (
     QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QProgressBar,
     QPushButton, QComboBox, QDialog, QLineEdit, QFormLayout, QDialogButtonBox,
+    QDateTimeEdit, QScrollArea, QFrame, QMessageBox,
 )
 
 from ..models import DownloadItem, FORMAT_PRESETS, format_label
@@ -47,6 +49,159 @@ class ClipDialog(QDialog):
         return self.start.text().strip(), self.end.text().strip()
 
 
+class ScheduleDialog(QDialog):
+    """Pick a future start time for a queued download (v1.0.4)."""
+    def __init__(self, item: DownloadItem, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Schedule download")
+        form = QFormLayout(self)
+        self.dt = QDateTimeEdit()
+        self.dt.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.dt.setCalendarPopup(True)
+        if item.start_at:
+            try:
+                self.dt.setDateTime(datetime.fromisoformat(item.start_at))
+            except Exception:
+                self.dt.setDateTime(datetime.now())
+        else:
+            self.dt.setDateTime(datetime.now())
+        # don't allow a time in the past
+        self.dt.setMinimumDateTime(datetime.now())
+        form.addRow("Start at", self.dt)
+        hint = QLabel("The download waits in the queue until this time. Clear to start immediately.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {theme.MUTED};")
+        form.addRow(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        if item.start_at:
+            clear = buttons.addButton("Clear", QDialogButtonBox.ResetRole)
+            clear.clicked.connect(self._clear)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _clear(self) -> None:
+        self.dt = None
+        self.accept()
+
+    def value(self) -> str:
+        if self.dt is None:
+            return ""
+        return self.dt.dateTime().toPython().isoformat()
+
+
+class FormatsDialog(QDialog):
+    """Shows yt-dlp's available formats for an item and applies the chosen one."""
+    SHOW_FORMATS = "__show_formats__"
+
+    def __init__(self, state, item: DownloadItem, parent=None) -> None:
+        super().__init__(parent)
+        self.state = state
+        self.item = item
+        self.setWindowTitle("Available formats")
+        self.resize(560, 460)
+        outer = QVBoxLayout(self)
+        title = QLabel(item.display_title)
+        title.setWordWrap(True)
+        title.setStyleSheet(f"font-weight: 600; color: {theme.TEXT};")
+        outer.addWidget(title)
+        hint = QLabel(f"{item.host}  ·  pick a format to download")
+        hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        outer.addWidget(hint)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        host = QWidget()
+        self.list_layout = QVBoxLayout(host)
+        self.list_layout.setContentsMargins(0, 0, 0, 0)
+        self.list_layout.setSpacing(4)
+        self.list_layout.addStretch(1)
+        self.scroll.setWidget(host)
+        outer.addWidget(self.scroll, 1)
+
+        self._render()
+        # refresh once formats load
+        state.item_changed.connect(self._on_changed)
+
+    def _on_changed(self, item_id: str) -> None:
+        if item_id == self.item.id:
+            self._render()
+
+    def _render(self) -> None:
+        # clear
+        for i in reversed(range(self.list_layout.count() - 1)):
+            w = self.list_layout.itemAt(i).widget()
+            if w:
+                w.deleteLater()
+        iid = self.item.id
+        if iid in self.state.formats_loading:
+            lbl = QLabel("Loading formats…")
+            lbl.setStyleSheet(f"color: {theme.MUTED};")
+            self.list_layout.insertWidget(0, lbl)
+            return
+        err = self.state.formats_error.get(iid, "")
+        rows = self.state.format_lists.get(iid)
+        if err and not rows:
+            box = QHBoxLayout()
+            box.addWidget(QLabel(err))
+            again = QPushButton("Try again")
+            again.clicked.connect(lambda: self.state.load_formats(iid))
+            box.addStretch(1)
+            box.addWidget(again)
+            wrap = QWidget(); wrap.setLayout(box)
+            self.list_layout.insertWidget(0, wrap)
+            return
+        if not rows:
+            lbl = QLabel("No formats available.")
+            lbl.setStyleSheet(f"color: {theme.MUTED};")
+            self.list_layout.insertWidget(0, lbl)
+            return
+        for f in rows:
+            self.list_layout.insertWidget(self.list_layout.count() - 1, self._row(f))
+
+    def _row(self, f) -> QFrame:
+        frame = QFrame()
+        frame.setStyleSheet(
+            f"QFrame {{ background: {theme.PANEL}; border: 1px solid {theme.LINE};"
+            f" border-radius: 6px; }}"
+            f"QFrame:hover {{ background: #1d2230; }}"
+        )
+        h = QHBoxLayout(frame)
+        h.setContentsMargins(10, 8, 10, 8)
+        h.setSpacing(10)
+        id_lbl = QLabel(f.id)
+        id_lbl.setStyleSheet(f"font-family: Consolas; color: {theme.ACCENT2}; font-weight: 600;")
+        id_lbl.setMinimumWidth(70)
+        ext = QLabel(f.ext)
+        ext.setStyleSheet(f"color: {theme.TEXT};")
+        ext.setMinimumWidth(40)
+        res = QLabel(f.resolution or "—")
+        res.setStyleSheet(f"color: {theme.TEXT};")
+        res.setMinimumWidth(90)
+        tbr = QLabel(f.tbr or "")
+        tbr.setStyleSheet(f"color: {theme.MUTED}; font-family: Consolas;")
+        tbr.setMinimumWidth(50)
+        size = QLabel(f.size_str or "")
+        size.setStyleSheet(f"color: {theme.MUTED}; font-family: Consolas;")
+        kind = QLabel(f.kind_label)
+        kind.setStyleSheet(f"color: {theme.MUTED}; font-size: 10px;")
+        for w in (id_lbl, ext, res, tbr, size, kind):
+            h.addWidget(w)
+        h.addStretch(1)
+        btn = QPushButton("Download")
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {theme.ACCENT}; color: #0e1014; padding: 4px 10px;"
+            f" border-radius: 5px; font-weight: 600; }}"
+        )
+        btn.clicked.connect(lambda _=False, ff=f: self._pick(ff))
+        h.addWidget(btn)
+        return frame
+
+    def _pick(self, f) -> None:
+        self.state.apply_format(f, self.item.id)
+        self.accept()
+
+
 class QueueRow(QWidget):
     def __init__(self, state, item: DownloadItem) -> None:
         super().__init__()
@@ -83,6 +238,7 @@ class QueueRow(QWidget):
         self.badge = QLabel("")
         self.fmt_chip = QLabel("")
         self.clip_chip = QLabel("")
+        self.schedule_chip = QLabel("")
         self.progress = QProgressBar()
         self.progress.setFixedWidth(320)
         self.progress.setRange(0, 1000)
@@ -96,7 +252,7 @@ class QueueRow(QWidget):
         self.err_label.setStyleSheet(f"color: {theme.ERR}; font-size: 10px;")
         self.bytes_label = QLabel("")
         self.bytes_label.setStyleSheet(f"color: {theme.MUTED}; font-family: Consolas; font-size: 10px;")
-        for w in (self.badge, self.fmt_chip, self.clip_chip, self.progress, self.percent, self.spinner, self.err_label):
+        for w in (self.badge, self.fmt_chip, self.clip_chip, self.schedule_chip, self.progress, self.percent, self.spinner, self.err_label):
             self.status_row.addWidget(w)
         center.addLayout(self.status_row)
         center.addWidget(self.bytes_label)
@@ -111,8 +267,12 @@ class QueueRow(QWidget):
         self.format_combo = QComboBox()
         self.format_combo.setMinimumWidth(120)
         self.format_combo.currentIndexChanged.connect(self._on_format_changed)
+        self._combo_prev_idx = 0
         self.clip_btn = QPushButton("Clip…")
         self.clip_btn.clicked.connect(self._open_clip)
+        self.schedule_btn = QPushButton("Schedule…")
+        self.schedule_btn.setToolTip("Start this download at a later time")
+        self.schedule_btn.clicked.connect(self._open_schedule)
         self.controls.addLayout(self.button_row)
         root.addLayout(self.controls)
 
@@ -127,6 +287,8 @@ class QueueRow(QWidget):
         self.format_combo.addItem(f"Default ({format_label(self.state.settings.format_preset, self.state.settings.custom_format)})")
         for k, label, _arg, _ext in FORMAT_PRESETS:
             self.format_combo.addItem(label)
+        # v1.0.4: launch the format preview dialog
+        self.format_combo.addItem("Show available formats…")
         # select current override if any
         if self.item.format_preset:
             for i, (k, _l, _a, _e) in enumerate(FORMAT_PRESETS, start=1):
@@ -138,11 +300,38 @@ class QueueRow(QWidget):
         self.format_combo.blockSignals(False)
 
     def _on_format_changed(self, idx: int) -> None:
+        # "Show available formats…" is the last entry
+        if idx == self.format_combo.count() - 1:
+            # reset to previous selection, then open the dialog
+            prev = self._combo_prev_idx or 0
+            self.format_combo.blockSignals(True)
+            self.format_combo.setCurrentIndex(prev)
+            self.format_combo.blockSignals(False)
+            self._open_formats()
+            return
+        self._combo_prev_idx = idx
         if idx <= 0:
             self.state.set_item_format(self.item.id, "", "")
         else:
             k, _l, _a, _e = FORMAT_PRESETS[idx - 1]
             self.state.set_item_format(self.item.id, k, "")
+
+    def _open_formats(self) -> None:
+        self.state.load_formats(self.item.id)
+        dlg = FormatsDialog(self.state, self.item, self)
+        dlg.exec()
+        # refresh combo so a chosen custom format shows
+        it = self.state.item(self.item.id)
+        if it and it.status == "queued":
+            self._fill_format_combo()
+
+    def _open_schedule(self) -> None:
+        dlg = ScheduleDialog(self.item, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.state.set_item_schedule(self.item.id, dlg.value())
+            it = self.state.item(self.item.id)
+            if it:
+                self.refresh(it)
 
     def _open_clip(self) -> None:
         dlg = ClipDialog(self.item, self)
@@ -169,14 +358,16 @@ class QueueRow(QWidget):
             if w:
                 w.deleteLater()
         st = self.item.status
-        # per-item format + clip only while queued
+        # per-item format + clip + schedule only while queued
         if st == "queued":
             if self.format_combo.parent() is None:
                 self.button_row.addWidget(self.format_combo)
             self.button_row.addWidget(self.clip_btn)
+            self.button_row.addWidget(self.schedule_btn)
         else:
             self.format_combo.setParent(None)
             self.clip_btn.setParent(None)
+            self.schedule_btn.setParent(None)
         if st == "resolving":
             self.button_row.addWidget(self._btn("✕", "Remove", theme.ERR, lambda: self.state.remove(self.item.id)))
         elif st == "downloading":
@@ -228,6 +419,17 @@ class QueueRow(QWidget):
         else:
             self.clip_chip.setText("")
             self.clip_chip.setStyleSheet("")
+        if item.has_schedule:
+            try:
+                dt = datetime.fromisoformat(item.start_at).strftime("%b %d, %H:%M")
+            except Exception:
+                dt = item.start_at
+            self.schedule_chip.setText(f"starts {dt}")
+            self.schedule_chip.setStyleSheet(
+                f"background: {theme.ACCENT2}; color: #0e1014; padding: 1px 6px; border-radius: 6px; font-size: 10px;")
+        else:
+            self.schedule_chip.setText("")
+            self.schedule_chip.setStyleSheet("")
 
         downloading = item.status in ("downloading", "paused")
         self.progress.setVisible(downloading and item.total_bytes > 0)
@@ -272,6 +474,141 @@ class QueueRow(QWidget):
                 "stopped": theme.MUTED}.get(st, theme.TEXT)
 
     # ── thumbnail ───────────────────────────────────────────────────────────
+    def _load_thumb(self, url: str) -> None:
+        if not url:
+            return
+        try:
+            req = QNetworkRequest(QUrl(url))
+            req.setAttribute(QNetworkRequest.RedirectPolicyAttribute,
+                             QNetworkRequest.NoLessSafeRedirectPolicy)
+            self._thumb_reply = self.nam.get(req)
+            self._thumb_reply.finished.connect(self._on_thumb)
+        except Exception:
+            pass
+
+    def _on_thumb(self) -> None:
+        if not self._thumb_reply:
+            return
+        data = self._thumb_reply.readAll()
+        pix = QPixmap()
+        if pix.loadFromData(data):
+            self.thumb.setPixmap(pix.scaled(132, 74, Qt.KeepAspectRatioByExpanding,
+                                            Qt.SmoothTransformation))
+        self._thumb_reply.deleteLater()
+        self._thumb_reply = None
+
+
+class HistoryRow(QWidget):
+    """A row in the history archive: thumbnail, metadata, and re-download /
+    reveal / delete / remove controls (v1.0.4)."""
+    def __init__(self, state, item: DownloadItem) -> None:
+        super().__init__()
+        self.state = state
+        self.item = item
+        self.setObjectName("row")
+        self.setStyleSheet(theme.ROW_QSS)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.nam = QNetworkAccessManager(self)
+        self._thumb_reply: Optional[QNetworkReply] = None
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(14)
+
+        self.thumb = QLabel()
+        self.thumb.setFixedSize(132, 74)
+        self.thumb.setAlignment(Qt.AlignCenter)
+        self.thumb.setStyleSheet(f"background: #0b0d12; border-radius: 6px; color: {theme.MUTED};")
+        self.thumb.setText("·")
+        root.addWidget(self.thumb)
+
+        center = QVBoxLayout()
+        center.setSpacing(6)
+        self.title = QLabel(item.display_title)
+        self.title.setStyleSheet(f"font-weight: 600; font-size: 13px; color: {theme.TEXT};")
+        center.addWidget(self.title)
+        self.meta = QLabel("")
+        self.meta.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        center.addWidget(self.meta)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.badge = QLabel(QueueRow._badge_text(item.status))
+        self.badge.setStyleSheet(
+            f"color: {QueueRow._badge_color(item.status)}; font-weight: 600; font-size: 11px;")
+        self.fmt_chip = QLabel(item.format_desc)
+        self.fmt_chip.setStyleSheet(
+            f"background: {theme.LINE}; color: {theme.TEXT}; padding: 1px 6px; border-radius: 6px; font-size: 10px;"
+            if item.format_desc else "")
+        self.completed = QLabel("")
+        self.completed.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        self.file_label = QLabel("")
+        self.file_label.setStyleSheet(f"color: {theme.MUTED}; font-family: Consolas; font-size: 10px;")
+        for w in (self.badge, self.fmt_chip, self.completed, self.file_label):
+            row.addWidget(w)
+        row.addStretch(1)
+        center.addLayout(row)
+        root.addLayout(center, 1)
+
+        # controls
+        controls = QHBoxLayout()
+        controls.setSpacing(5)
+        controls.addWidget(self._btn("↻", "Re-download", theme.OK,
+                                     lambda: self.state.redownload(item.id)))
+        controls.addWidget(self._btn("📁", "Reveal", theme.ACCENT2,
+                                     lambda: self.state.reveal(item.id)))
+        if item.output_file_path:
+            controls.addWidget(self._btn("🗑", "Delete file", theme.ERR,
+                                         lambda: self.state.delete_file(item.id)))
+        controls.addWidget(self._btn("✕", "Remove from history", theme.MUTED,
+                                     lambda: self.state.remove_from_history(item.id)))
+        root.addLayout(controls)
+
+        self.refresh(item)
+        self._load_thumb(item.thumbnail)
+
+    def _btn(self, text, tip, color, handler) -> QPushButton:
+        b = QPushButton(text)
+        b.setToolTip(tip)
+        b.setFixedWidth(34)
+        b.setStyleSheet(
+            f"QPushButton {{ background: {theme.PANEL}; border: 1px solid {theme.LINE};"
+            f" border-radius: 6px; color: {color}; padding: 2px; }}"
+            f"QPushButton:hover {{ background: #1d2230; }}"
+        )
+        b.clicked.connect(handler)
+        return b
+
+    def refresh(self, item: DownloadItem) -> None:
+        self.item = item
+        self.title.setText(item.display_title)
+        meta_parts = [item.host]
+        if item.uploader:
+            meta_parts.append(item.uploader)
+        if item.duration_str:
+            meta_parts.append(item.duration_str)
+        self.meta.setText("  ·  ".join(meta_parts))
+        self.badge.setText(QueueRow._badge_text(item.status))
+        self.badge.setStyleSheet(
+            f"color: {QueueRow._badge_color(item.status)}; font-weight: 600; font-size: 11px;")
+        self.fmt_chip.setText(item.format_desc)
+        self.fmt_chip.setStyleSheet(
+            f"background: {theme.LINE}; color: {theme.TEXT}; padding: 1px 6px; border-radius: 6px; font-size: 10px;"
+            if item.format_desc else "")
+        if item.completed_at:
+            try:
+                dt = datetime.fromisoformat(item.completed_at).strftime("%b %d, %H:%M")
+            except Exception:
+                dt = item.completed_at
+            self.completed.setText(f"completed {dt}")
+        else:
+            self.completed.setText("")
+        if item.output_file_path:
+            import os
+            self.file_label.setText(os.path.basename(item.output_file_path))
+        else:
+            self.file_label.setText("")
+
     def _load_thumb(self, url: str) -> None:
         if not url:
             return

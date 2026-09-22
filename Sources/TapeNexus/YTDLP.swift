@@ -213,6 +213,66 @@ final class YTDLPController: @unchecked Sendable {
         return entries.isEmpty ? nil : Array(entries.prefix(max(1, cap)))
     }
 
+    // MARK: - Format listing (preview before download)
+
+    /// Runs `yt-dlp -F` and parses the available-format table into FormatInfo
+    /// rows. Returns nil if the probe fails. yt-dlp prints the table to stderr.
+    func listFormats(_ url: String) -> [FormatInfo]? {
+        let r = runSync(["-F", "--no-playlist", "--no-warnings", url], timeout: 40)
+        // yt-dlp exits 0 even with warnings; treat a missing table as failure.
+        let combined = r.err + "\n" + r.out
+        let lines = combined.split(separator: "\n").map(String.init)
+        var rows: [FormatInfo] = []
+        var sawTable = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // column header marks the start of the table
+            if trimmed.hasPrefix("ID") && trimmed.contains("EXT") {
+                sawTable = true
+                continue
+            }
+            if !sawTable { continue }
+            if trimmed.allSatisfy({ $0 == "-" || $0 == "─" || $0.isWhitespace }) { continue }
+            if let f = parseFormatLine(line) { rows.append(f) }
+        }
+        return (sawTable && !rows.isEmpty) ? rows : nil
+    }
+
+    /// Parses one `yt-dlp -F` body line into a FormatInfo. Lines are pipe-
+    /// separated into (ID EXT RESOLUTION FPS CH │ FILESIZE TBR PROTO │ codecs).
+    private func parseFormatLine(_ line: String) -> FormatInfo? {
+        let columns = line.components(separatedBy: "│")
+        guard columns.count >= 2 else { return nil }
+        let left = columns[0].split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard left.count >= 2 else { return nil }
+        let id = left[0]
+        let ext = left[1]
+        // "audio only" rows put that text in the resolution column; the trailing
+        // "video only"/"audio only" marker is the authoritative stream kind.
+        let audioByColumn = left.count >= 3 && left[2] == "audio"
+        let kind: FormatInfo.Kind
+        if line.contains("video only") {
+            kind = .video
+        } else if line.contains("audio only") || audioByColumn {
+            kind = .audio
+        } else {
+            kind = .mixed
+        }
+        let resolution = (kind == .audio || audioByColumn) ? "" : (left.count >= 3 ? left[2] : "")
+        // filesize + bitrate live in the middle column.
+        let mid = columns[1].split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        var sizeStr = ""
+        var tbr = ""
+        for tok in mid {
+            if sizeStr.isEmpty && tok.range(of: #"\d+(\.\d+)?[KMG]i?B$"#, options: .regularExpression) != nil {
+                sizeStr = tok
+            }
+            if tbr.isEmpty && tok.hasSuffix("k") { tbr = tok }
+        }
+        return FormatInfo(id: id, ext: ext, resolution: resolution,
+                          sizeStr: sizeStr, tbr: tbr, kind: kind)
+    }
+
     // MARK: - Download
 
     /// Spawns a download for `item`. Returns the yt-dlp pid (0 on failure).

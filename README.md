@@ -7,10 +7,10 @@ A native macOS app that watches your clipboard, queues any URL **yt-dlp supports
 ## Download & install
 
 ### macOS
-1. Download **`TapeNexus-1.0.3.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.4.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. Install it:
    ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.3.pkg -target /
+   sudo installer -pkg ~/Downloads/TapeNexus-1.0.4.pkg -target /
    ```
 3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
    ```bash
@@ -29,16 +29,19 @@ The Windows `.exe` is built by GitHub Actions (`.github/workflows/build-windows.
 
 - **Clipboard auto-grab** — detects copied http(s) URLs; only adds links yt-dlp actually supports (verified via `--simulate`). Unsupported links are silently skipped.
 - **Sleek single-window dashboard** (dark UI) — thumbnails, title, host, format, live progress bar, speed, ETA, byte counts.
-- **Unified list with filter** — All / Active / Done / Failed stay in one list (no separate history page); counts update live.
+- **Queue + History** — two-tab view with live counts. **History** keeps a searchable archive of everything you've downloaded (capped at 500); re-download, reveal, or remove entries, and search across title, channel, host, and URL. "Clear done" archives finished items into history instead of dropping them. **Retry all** re-queues every failed/stopped item in one click.
+- **Unified list with filter** — All / Active / Done / Failed stay in one list; counts update live.
+- **Format preview** — on a queued item, "Show available formats…" runs yt-dlp `--list-formats` and shows every resolution / bitrate / size the link offers, so the per-item format picker is informed, not guessed. Picking a row applies it as a custom `-f`.
+- **Per-item scheduling** — schedule a queued item to start at a later time (in addition to global quiet hours). The item waits in the queue until its start time, then kicks off automatically; the scheduler re-checks every minute.
 - **Per-item controls** — pause · resume · stop · retry · reveal in Finder · remove · delete downloaded file. Per-row **format picker** and **clip** (time-range) editor on queued items.
-- **Toolbar** — Clear done (finished items), Pause all, paste-a-URL field. Paste a whole block of URLs (or drop a `.txt` file / drag links onto the window) to queue them all at once.
+- **Toolbar** — Clear done (finished items), Pause all, Retry all, paste-a-URL field. Paste a whole block of URLs (or drop a `.txt` file / drag links onto the window) to queue them all at once.
 - **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium so age-restricted, members-only, and login-gated content downloads.
 - **Playlist expansion** — optionally expand a playlist link into one queue item per video (capped).
 - **Per-host organization** — optionally file downloads into `<site>/<title>.<ext>` (e.g. `YouTube/…`) instead of a flat folder.
 - **Subtitle language picker** — choose which subtitle languages to embed.
 - **Completion notifications + Dock badge** — native macOS notification when a download finishes or fails; Dock badge shows the active count.
 - **Menu-bar mode** — run Tape Nexus as a status-bar-only app (no Dock icon); close the window to background it, use the status icon to bring it back.
-- **Quiet hours** — automatically pause all downloads during a time window and resume when it ends.
+- **Quiet hours** — automatically pause all downloads during a time window and resume when it ends. Per-item scheduling (above) layers on top for individual items.
 - **Settings sheet** (`⌘,`) — destination folder, default format (Best / 1080p / 720p / Audio m4a / **Audio MP3** / Custom `-f`), concurrent downloads (1–4), clipboard poll interval, SponsorBlock, embed metadata, embed subtitles, plus all of the above.
 - **Auto-start on detection** — optional (default **off**). When off, detected URLs queue up and wait for you to hit ▶ Start now.
 - **yt-dlp auto-update on launch** — fetches the latest macOS binary from GitHub and atomically swaps it. Can be disabled; manual "Check now" in Settings.

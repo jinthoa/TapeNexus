@@ -20,7 +20,7 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(ROOT, "tapenexus", "bin")
-VERSION = os.environ.get("TN_VERSION", "1.0.3").lstrip("vV")
+VERSION = os.environ.get("TN_VERSION", "1.0.4").lstrip("vV")
 
 
 def _download(url: str, dest: str) -> None:
