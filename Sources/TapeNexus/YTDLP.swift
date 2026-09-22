@@ -3,7 +3,7 @@ import Foundation
 import Darwin
 #endif
 
-struct VideoMeta {
+struct VideoMeta: Codable {
     var title: String
     var uploader: String
     var thumbnail: String

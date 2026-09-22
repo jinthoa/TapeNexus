@@ -27,27 +27,37 @@ if [[ ! -x "$YTDLP" ]]; then
 fi
 echo "  yt-dlp bundled: $("$YTDLP" --version 2>/dev/null | head -1)"
 
-# ── 1b. Fetch ffmpeg + ffprobe (martin-riedl.de arm64 static builds) ────────
-# yt-dlp needs ffmpeg to merge bestvideo+bestaudio into one file. We bundle
-# native arm64 builds (signed + notarized) from martin-riedl.de so there's no
-# Rosetta 2 dependency and no "Intel app support ending" warning. Cached in
-# Resources/bin like yt-dlp. Stable redirect URLs always point at the newest
-# release build.
+# ── 1b. Fetch ffmpeg + ffprobe (universal: arm64 + x86_64) ───────────────────
+# yt-dlp needs ffmpeg to merge bestvideo+bestaudio into one file. We bundle a
+# UNIVERSAL ffmpeg/ffprobe so the app runs on both Apple Silicon and Intel:
+# arm64 slice from martin-riedl.de (signed/notarized, native on Apple Silicon
+# — no Rosetta, no "Intel app support ending" warning) + x86_64 slice from
+# evermeet.cx (native on Intel). lipo merges them into one fat binary. Cached
+# in Resources/bin like yt-dlp.
 FFMPEG="$RES/bin/ffmpeg"
 FFPROBE="$RES/bin/ffprobe"
-BASE="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release"
-if [[ ! -x "$FFMPEG" || ! -x "$FFPROBE" ]]; then
-  echo "▶ Fetching ffmpeg + ffprobe (martin-riedl.de, arm64)…"
+MR_ARM="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release"
+EV_X86="https://evermeet.cx/ffmpeg/getrelease"
+is_universal() {
+  local a; a=$(lipo -archs "$1" 2>/dev/null)
+  [[ "$a" == *"arm64"* && "$a" == *"x86_64"* ]]
+}
+if ! is_universal "$FFMPEG" || ! is_universal "$FFPROBE"; then
+  echo "▶ Fetching ffmpeg + ffprobe (arm64 martin-riedl.de + x86_64 evermeet.cx)…"
   tmp="$(mktemp -d)"
-  curl -fsSL -o "$tmp/ffmpeg.zip" "$BASE/ffmpeg.zip"
-  curl -fsSL -o "$tmp/ffprobe.zip" "$BASE/ffprobe.zip"
-  ( cd "$tmp" && unzip -o ffmpeg.zip >/dev/null && unzip -o ffprobe.zip >/dev/null )
-  chmod +x "$tmp/ffmpeg" "$tmp/ffprobe"
-  mv "$tmp/ffmpeg" "$FFMPEG"
-  mv "$tmp/ffprobe" "$FFPROBE"
+  mkdir -p "$tmp/arm64" "$tmp/x86"
+  curl -fsSL -o "$tmp/arm64-ffmpeg.zip"  "$MR_ARM/ffmpeg.zip"
+  curl -fsSL -o "$tmp/arm64-ffprobe.zip" "$MR_ARM/ffprobe.zip"
+  curl -fsSL -o "$tmp/x86-ffmpeg.zip"    "$EV_X86/zip"
+  curl -fsSL -o "$tmp/x86-ffprobe.zip"   "$EV_X86/ffprobe/zip"
+  ( cd "$tmp/arm64" && unzip -o ../arm64-ffmpeg.zip >/dev/null  && unzip -o ../arm64-ffprobe.zip >/dev/null )
+  ( cd "$tmp/x86"   && unzip -o ../x86-ffmpeg.zip >/dev/null    && unzip -o ../x86-ffprobe.zip >/dev/null )
+  lipo -create "$tmp/arm64/ffmpeg"  "$tmp/x86/ffmpeg"  -output "$FFMPEG"
+  lipo -create "$tmp/arm64/ffprobe" "$tmp/x86/ffprobe" -output "$FFPROBE"
+  chmod +x "$FFMPEG" "$FFPROBE"
   rm -rf "$tmp"
 fi
-echo "  ffmpeg bundled: $("$FFMPEG" -version 2>/dev/null | head -1)"
+echo "  ffmpeg bundled: $("$FFMPEG" -version 2>/dev/null | head -1) [$(lipo -archs "$FFMPEG")]"
 
 # ── 2. Compile Swift sources ─────────────────────────────────────────────────
 echo "▶ Compiling…"
@@ -66,13 +76,19 @@ while IFS= read -r -d '' f; do
   SWIFT_FILES+=("$f")
 done < <(find "$SRC" -name '*.swift' -print0)
 
-swiftc -O \
-  -swift-version 5 \
-  -target arm64-apple-macos14 \
-  -sdk "$SDK" \
+# Universal binary: compile each arch separately (swiftc has no `universal`
+# target), then lipo them together. Runs natively on Apple Silicon and Intel.
+echo "▶ Compiling (arm64)…"
+swiftc -O -swift-version 5 -target arm64-apple-macos14 -sdk "$SDK" \
   -framework SwiftUI -framework AppKit -framework Foundation -framework Combine \
-  "${SWIFT_FILES[@]}" \
-  -o "$APP/Contents/MacOS/TapeNexus"
+  "${SWIFT_FILES[@]}" -o "$BUILD/TapeNexus.arm64"
+echo "▶ Compiling (x86_64)…"
+swiftc -O -swift-version 5 -target x86_64-apple-macos14 -sdk "$SDK" \
+  -framework SwiftUI -framework AppKit -framework Foundation -framework Combine \
+  "${SWIFT_FILES[@]}" -o "$BUILD/TapeNexus.x86_64"
+echo "▶ Linking universal binary…"
+lipo -create "$BUILD/TapeNexus.arm64" "$BUILD/TapeNexus.x86_64" -output "$APP/Contents/MacOS/TapeNexus"
+rm -f "$BUILD/TapeNexus.arm64" "$BUILD/TapeNexus.x86_64"
 
 # ── 3. Assemble the bundle ───────────────────────────────────────────────────
 echo "▶ Assembling .app bundle…"

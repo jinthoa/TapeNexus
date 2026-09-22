@@ -10,6 +10,7 @@ final class AppState: ObservableObject {
     @Published var filter: StatusFilter = .all
     @Published var showSettings: Bool = false
     @Published var updateStatus = UpdateStatus()
+    @Published var appUpdateStatus = AppUpdateStatus()
     @Published var skippedCount: Int = 0
     @Published var lastLog: [UUID: [String]] = [:]
     @Published var pasteField: String = ""
@@ -19,6 +20,7 @@ final class AppState: ObservableObject {
     let downloads: DownloadManager
     let clipboard = ClipboardMonitor()
     let updater: Updater
+    let appUpdater = AppUpdater()
 
     init() {
         let store = SettingsStore()
@@ -43,6 +45,14 @@ final class AppState: ObservableObject {
         dm.state = self
         yt.ensureBinary()
         updater.onStatus = { [weak self] s in self?.updateStatus = s }
+        appUpdater.onStatus = { [weak self] s in self?.appUpdateStatus = s }
+
+        // App self-update: a notify-only check a few seconds after launch so the
+        // user learns a newer Tape Nexus is on GitHub without anything auto-
+        // installing. The Settings button does the actual download + install.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [weak self] in
+            DispatchQueue.main.async { self?.appUpdater.check(auto: true) }
+        }
 
         // clipboard wiring
         clipboard.enabled = settings.autoGrabClipboard
@@ -132,6 +142,12 @@ final class AppState: ObservableObject {
     }
 
     private func verify(id: UUID, url: String, startImmediately: Bool) {
+        // Cache hit: a URL we've already resolved this session (or a previous
+        // one) is reused without another `--simulate` network call.
+        if let cached = store.metaCache[url] {
+            applyMeta(id: id, url: url, meta: cached, startImmediately: startImmediately)
+            return
+        }
         let ytRef = yt
         DispatchQueue.global().async { [weak self] in
             let result = ytRef.simulate(url)
@@ -140,17 +156,8 @@ final class AppState: ObservableObject {
                 guard self.item(id) != nil else { return } // removed meanwhile
                 switch result {
                 case .success(let meta):
-                    self.update(id) {
-                        $0.title = meta.title
-                        $0.uploader = meta.uploader
-                        $0.thumbnailURL = meta.thumbnail
-                        $0.durationStr = meta.durationStr
-                        $0.status = .queued
-                    }
-                    self.persist()
-                    if startImmediately {
-                        self.downloads.pump()
-                    }
+                    self.store.metaCache[url] = meta
+                    self.applyMeta(id: id, url: url, meta: meta, startImmediately: startImmediately)
                 case .unsupported:
                     // host not recognised by yt-dlp → silently skip
                     self.removeItem(id)
@@ -167,6 +174,20 @@ final class AppState: ObservableObject {
                     self.persist()
                 }
             }
+        }
+    }
+
+    private func applyMeta(id: UUID, url: String, meta: VideoMeta, startImmediately: Bool) {
+        update(id) {
+            $0.title = meta.title
+            $0.uploader = meta.uploader
+            $0.thumbnailURL = meta.thumbnail
+            $0.durationStr = meta.durationStr
+            $0.status = .queued
+        }
+        persist()
+        if startImmediately {
+            downloads.pump()
         }
     }
 
@@ -207,6 +228,13 @@ final class AppState: ObservableObject {
     }
 
     func checkForUpdatesNow() { updater.checkAndUpdate(auto: true) }
+
+    /// Manual app self-update: checks GitHub and, if newer, downloads the .pkg
+    /// and opens Installer (auto-launch checks are notify-only).
+    func checkForAppUpdateNow() { appUpdater.check(auto: false) }
+
+    /// The app's own version (CFBundleShortVersionString), for the Settings view.
+    var appVersion: String { appUpdater.currentVersion }
 
     var activeCount: Int { items.filter { $0.status == .downloading }.count }
     var queuedCount: Int { items.filter { $0.status == .queued }.count }

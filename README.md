@@ -6,10 +6,10 @@ A native macOS app that watches your clipboard, queues any URL **yt-dlp supports
 
 ## Download & install
 
-1. Download **`TapeNexus-1.0.0.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.1.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. Install it:
    ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.0.pkg -target /
+   sudo installer -pkg ~/Downloads/TapeNexus-1.0.1.pkg -target /
    ```
 3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
    ```bash
@@ -27,8 +27,10 @@ A native macOS app that watches your clipboard, queues any URL **yt-dlp supports
 - **Settings sheet** (`⌘,`) — destination folder, default format (Best / 1080p / 720p / Audio / Custom `-f`), concurrent downloads (1–4), clipboard poll interval, SponsorBlock, embed metadata, embed subtitles.
 - **Auto-start on detection** — optional (default **off**). When off, detected URLs queue up and wait for you to hit ▶ Start now.
 - **yt-dlp auto-update on launch** — fetches the latest macOS binary from GitHub and atomically swaps it. Can be disabled; manual "Check now" in Settings.
-- **Persistence** — queue + history survive restarts (stored in `~/Library/Application Support/TapeNexus/`).
-- **PKG installer** — `build.sh` produces a `.pkg` that installs into `/Applications`; signed/notarized arm64 `ffmpeg` + `ffprobe` are bundled.
+- **Persistence** — queue + history survive restarts (stored in `~/Library/Application Support/TapeNexus/`). Resolved metadata is cached, so re-copied links don't re-hit the network with `--simulate`.
+- **App self-update** — checks GitHub for a newer Tape Nexus release; from Settings you can download the new `.pkg` and open Installer to update the app itself (launch checks are notify-only).
+- **Universal build** — runs natively on Apple Silicon **and** Intel (arm64 + x86_64 app binary, plus universal `ffmpeg`/`ffprobe`).
+- **PKG installer** — `build.sh` produces a `.pkg` that installs into `/Applications`; universal `ffmpeg` + `ffprobe` are bundled.
 
 ## Build & package
 
@@ -40,7 +42,7 @@ Produces:
 - `build/TapeNexus.app`
 - `build/TapeNexus-<version>.pkg`
 
-Requirements: Xcode command-line tools (`swiftc`, `xcodebuild`, `pkgbuild`, `productbuild`, `codesign`) and `curl`. The script downloads the `yt-dlp_macos` binary and arm64 `ffmpeg`/`ffprobe` automatically.
+Requirements: Xcode command-line tools (`swiftc`, `xcodebuild`, `pkgbuild`, `productbuild`, `codesign`) and `curl`. The script downloads the universal `yt-dlp_macos` binary and builds universal `ffmpeg`/`ffprobe` (arm64 slice from martin-riedl.de + x86_64 slice from evermeet.cx, merged with `lipo`) automatically.
 
 To install a pkg you built yourself: `sudo installer -pkg build/TapeNexus-<version>.pkg -target /`, then `xattr -dr com.apple.quarantine /Applications/TapeNexus.app`.
 
@@ -53,6 +55,7 @@ To install a pkg you built yourself: `sudo installer -pkg build/TapeNexus-<versi
 | `YTDLPController` | Resolves the binary, runs `--simulate` to verify + fetch metadata, spawns downloads, parses JSON progress (`--progress-template`), sends process-tree signals for pause/resume/stop. |
 | `DownloadManager` | Enforces concurrency; implements pause (SIGSTOP tree) / resume (SIGCONT) / stop (SIGTERM→SIGKILL) / retry / clear / delete. |
 | `Updater` | Checks GitHub releases, downloads `yt-dlp_macos`, atomically swaps the Application Support copy. |
+| `AppUpdater` | Checks GitHub for a newer Tape Nexus `.pkg`; downloads + opens Installer for the app itself (launch check is notify-only). |
 | `SettingsStore` | JSON persistence under Application Support. |
 
 Pause/resume use real POSIX process signals (`SIGSTOP`/`SIGCONT`) on the yt-dlp process tree, so they genuinely halt and resume I/O.
@@ -68,19 +71,17 @@ Sources/TapeNexus/
   ClipboardMonitor.swift    pasteboard polling
   YTDLP.swift               yt-dlp wrapper (version/simulate/download/signals)
   DownloadManager.swift     lifecycle + concurrency + controls
-  Updater.swift             GitHub release auto-update
+  Updater.swift             yt-dlp GitHub release auto-update
+  AppUpdater.swift          app GitHub release self-update (.pkg → Installer)
   SettingsStore.swift       JSON persistence
   Views/                    ContentView, QueueView, SettingsView, Theme
   Resources/Info.plist
-  Resources/bin/yt-dlp      (downloaded by build.sh)
-  Resources/bin/ffmpeg      (arm64, downloaded by build.sh)
-  Resources/bin/ffprobe     (arm64, downloaded by build.sh)
-build.sh                    compile → bundle → sign → .pkg
+  Resources/bin/yt-dlp      (universal, downloaded by build.sh)
+  Resources/bin/ffmpeg      (universal, lipo'd by build.sh)
+  Resources/bin/ffprobe     (universal, lipo'd by build.sh)
+build.sh                    compile (arm64 + x86_64) → lipo → bundle → sign → .pkg
 ```
 
 ## Notes / limitations (v1)
 
-- arm64 only (built on Apple Silicon). For Intel, add a universal build target.
-- Not notarized → requires the one-time `xattr` quarantine clear.
-- `--simulate` makes a network call per detected URL; the host pre-filter and poll cadence keep this cheap.
-- The app itself doesn't self-update (Sparkle etc.); only the bundled `yt-dlp` auto-updates. Rebuild + reinstall to update the app.
+- Not notarized → requires the one-time `xattr` quarantine clear (no paid Developer ID).

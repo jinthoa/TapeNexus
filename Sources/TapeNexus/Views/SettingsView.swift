@@ -88,6 +88,25 @@ struct SettingsSheet: View {
                             Label("Check for update now", systemImage: "arrow.clockwise.icloud")
                         }.buttonStyle(.bordered).controlSize(.small)
                     }
+
+                    section("App updates") {
+                        row("Installed version") {
+                            Text(state.appVersion)
+                                .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text)
+                        }
+                        row("Latest available") {
+                            Text(state.appUpdateStatus.latestVersion.isEmpty
+                                 ? "—" : state.appUpdateStatus.latestVersion)
+                                .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text)
+                        }
+                        if !state.appUpdateStatus.message.isEmpty {
+                            Text(state.appUpdateStatus.message)
+                                .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        }
+                        Button(action: { state.checkForAppUpdateNow() }) {
+                            Label("Check for Tape Nexus update", systemImage: "arrow.triangle.2.circlepath")
+                        }.buttonStyle(.bordered).controlSize(.small)
+                    }
                 }
                 .padding(18)
                 .frame(maxWidth: 560, alignment: .leading)
