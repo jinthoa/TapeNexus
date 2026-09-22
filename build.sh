@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tape Nexus — build, bundle, and ad-hoc sign the .app.
+# Tape Nexus — build, bundle, sign, and package into a .pkg installer.
 # Produces:
 #   build/TapeNexus.app           (the app)
-#
-# Packaging into a .pkg and attaching download assets is handled via GitHub
-# Releases, not here.
+#   build/TapeNexus-<ver>.pkg      (the installer)
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT/Sources/TapeNexus"
@@ -14,6 +12,7 @@ RES="$SRC/Resources"
 BUILD="$ROOT/build"
 APP="$BUILD/TapeNexus.app"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RES/Info.plist")"
+IDENTIFIER="com.bpenven.tapenexus"
 SDK="$(xcrun --show-sdk-path)"
 
 echo "▶ Tape Nexus build — version $VERSION"
@@ -106,9 +105,51 @@ echo "▶ Registering icon with LaunchServices / Spotlight…"
 "$LSREGISTER" -f "$APP" >/dev/null 2>&1 || true
 mdimport "$APP" >/dev/null 2>&1 || true
 
+# ── 5. Build the .pkg installer ──────────────────────────────────────────────
+echo "▶ Building .pkg…"
+PAYLOAD="$BUILD/payload"
+rm -rf "$PAYLOAD"
+mkdir -p "$PAYLOAD/Applications"
+cp -R "$APP" "$PAYLOAD/Applications/"
+
+COMPONENT_PKG="$BUILD/TapeNexus.component.pkg"
+pkgbuild \
+  --root "$PAYLOAD" \
+  --install-location / \
+  --identifier "$IDENTIFIER" \
+  --version "$VERSION" \
+  "$COMPONENT_PKG"
+
+DIST="$BUILD/Distribution.xml"
+cat > "$DIST" <<XML
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<installer-gui-script minSpecVersion="2">
+  <title>Tape Nexus $VERSION</title>
+  <organization>$IDENTIFIER</organization>
+  <options customize="never" require-scripts="false" rootVolumeOnly="true"/>
+  <domains enable_localSystem="true"/>
+  <choices-outline>
+    <line choice="default">
+      <line choice="$IDENTIFIER"/>
+    </line>
+  </choices-outline>
+  <choice id="default"/>
+  <choice id="$IDENTIFIER" visible="false">
+    <pkg-ref id="$IDENTIFIER"/>
+  </choice>
+  <pkg-ref id="$IDENTIFIER" version="$VERSION" onConclusion="none">TapeNexus.component.pkg</pkg-ref>
+</installer-gui-script>
+XML
+
+productbuild --distribution "$DIST" --package-path "$BUILD" "$BUILD/TapeNexus-$VERSION.pkg"
+
+rm -rf "$PAYLOAD"
+rm -f "$COMPONENT_PKG"
+
 echo
 echo "✔ Done."
 echo "  App:  $APP"
+echo "  Pkg:  $BUILD/TapeNexus-$VERSION.pkg"
 echo
 echo "  Run dev:  \"$APP/Contents/MacOS/TapeNexus\""
 echo
