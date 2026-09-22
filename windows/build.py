@@ -20,11 +20,11 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(ROOT, "tapenexus", "bin")
-VERSION = os.environ.get("TN_VERSION", "1.0.3")
+VERSION = os.environ.get("TN_VERSION", "1.0.3").lstrip("vV")
 
 
 def _download(url: str, dest: str) -> None:
-    print(f"  ↓ {url}")
+    print(f"  > {url}")
     urllib.request.urlretrieve(url, dest)
 
 
@@ -32,12 +32,12 @@ def ensure_binaries() -> None:
     os.makedirs(BIN, exist_ok=True)
     ytdlp = os.path.join(BIN, "yt-dlp.exe")
     if not os.path.isfile(ytdlp):
-        print("▶ Downloading yt-dlp.exe…")
+        print(">> Downloading yt-dlp.exe...")
         _download("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe", ytdlp)
 
     # ffmpeg + ffprobe from BtbN's Windows GPL build (zip with bin/*.exe)
     if not all(os.path.isfile(os.path.join(BIN, n)) for n in ("ffmpeg.exe", "ffprobe.exe")):
-        print("▶ Downloading ffmpeg + ffprobe (BtbN Windows GPL)…")
+        print(">> Downloading ffmpeg + ffprobe (BtbN Windows GPL)...")
         url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
         tmp = tempfile.mkdtemp()
         zp = os.path.join(tmp, "ffmpeg.zip")
@@ -54,7 +54,7 @@ def ensure_binaries() -> None:
 
 def build() -> None:
     ensure_binaries()
-    print("▶ Running PyInstaller…")
+    print(">> Running PyInstaller...")
     sep = ";" if os.name == "nt" else ":"
     cmd = [
         sys.executable, "-m", "PyInstaller",
@@ -73,7 +73,7 @@ def build() -> None:
     ]
     subprocess.check_call(cmd)
 
-    print("▶ Zipping dist/TapeNexus…")
+    print(">> Zipping dist/TapeNexus...")
     dist = os.path.join(ROOT, "dist")
     src = os.path.join(dist, "TapeNexus")
     zip_path = os.path.join(dist, f"TapeNexus-{VERSION}-win64.zip")
@@ -83,7 +83,7 @@ def build() -> None:
                 full = os.path.join(folder, fn)
                 arc = os.path.relpath(full, dist)
                 z.write(full, arc)
-    print(f"✔ {zip_path}")
+    print(f"OK: {zip_path}")
 
 
 if __name__ == "__main__":
