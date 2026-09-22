@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-/// Persists settings + queue/history as JSON under Application Support.
+/// Persists settings + queue as JSON under Application Support.
 final class SettingsStore: ObservableObject {
     static let appName = "TapeNexus"
 
@@ -13,7 +13,6 @@ final class SettingsStore: ObservableObject {
         didSet { schedulePersist() }
     }
     @Published var queue: [DownloadItem] = []
-    @Published var history: [DownloadItem] = []
     /// URL → resolved metadata cache so re-copied links don't re-hit the network
     /// with `--simulate` every time. Persisted alongside the queue.
     @Published var metaCache: [String: VideoMeta] = [:]
@@ -47,7 +46,6 @@ final class SettingsStore: ObservableObject {
         }
         if let q = Self.loadJSON(queueURL, as: QueueSnapshot.self) {
             queue = q.queue.filter { $0.status != .downloading && $0.status != .paused }
-            history = q.history
             metaCache = q.meta ?? [:]
         }
         ensureDestinationExists()
@@ -68,7 +66,7 @@ final class SettingsStore: ObservableObject {
     }
 
     func persistQueue() {
-        let snap = QueueSnapshot(queue: queue, history: history, meta: metaCache)
+        let snap = QueueSnapshot(queue: queue, meta: metaCache)
         saveJSON(snap, to: queueURL)
     }
 
@@ -106,6 +104,5 @@ final class SettingsStore: ObservableObject {
 
 private struct QueueSnapshot: Codable {
     let queue: [DownloadItem]
-    let history: [DownloadItem]
     let meta: [String: VideoMeta]?
 }

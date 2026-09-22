@@ -94,9 +94,8 @@ class DownloadItem:
     custom_format: str = ""
     clip_start: str = ""
     clip_end: str = ""
-    # v1.0.4: per-item scheduling + completion timestamp (ISO strings, "" = none)
+    # v1.0.4: per-item scheduling (ISO string, "" = start whenever a slot is free)
     start_at: str = ""
-    completed_at: str = ""
 
     # transient (not persisted)
     pid: int = 0
@@ -227,12 +226,7 @@ def looks_like_playlist(url: str) -> bool:
     return "list=" in l or "/playlist" in l or "playlist?" in l
 
 
-# ── v1.0.4: list mode + format preview ──────────────────────────────────────
-
-
-class ListMode(str, Enum):
-    queue = "queue"
-    history = "history"
+# ── v1.0.4: format preview ──────────────────────────────────────────────────
 
 
 @dataclass

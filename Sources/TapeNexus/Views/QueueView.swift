@@ -1,25 +1,18 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The whole single-page UI. A top-level Queue | History segmented control
-/// switches between the live download list and the searchable archive. The
-/// queue side keeps its All/Active/Done/Failed filter; the history side is a
-/// flat, searchable list with re-download / reveal / delete actions.
+/// The whole single-page UI: header, filter bar with bulk actions, and the
+/// scrollable queue list. Done/failed items stay in the list until "Clear
+/// done" removes them.
 struct QueueView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            modeBar
+            filterBar
             Divider().overlay(Theme.line)
-            if state.listMode == .queue {
-                filterBar
-                Divider().overlay(Theme.line)
-                queueList
-            } else {
-                historyList
-            }
+            queueList
         }
         .onDrop(of: [UTType.text, UTType.url, UTType.fileURL],
                 delegate: URLDropDelegate(state: state))
@@ -81,66 +74,7 @@ struct QueueView: View {
         }
     }
 
-    // MARK: Mode bar — Queue | History + search + bulk actions
-
-    private var modeBar: some View {
-        HStack(spacing: 10) {
-            Picker("", selection: $state.listMode) {
-                ForEach(ListMode.allCases) { m in
-                    let count = m == .queue ? state.items.count : state.history.count
-                    Text("\(m.label) · \(count)").tag(m)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 180)
-            .labelsHidden()
-
-            searchField
-
-            Spacer()
-
-            if state.listMode == .queue {
-                Button(action: { state.retryAll() }) {
-                    Label("Retry all", systemImage: "arrow.clockwise").font(.system(size: 12))
-                }
-                .buttonStyle(.bordered).controlSize(.small)
-                .disabled(state.count(for: .failed) == 0)
-                Button(action: { state.clearFinished() }) {
-                    Label("Clear done", systemImage: "checkmark.broom").font(.system(size: 12))
-                }.buttonStyle(.bordered).controlSize(.small)
-                Button(action: { state.pauseAll() }) {
-                    Label("Pause all", systemImage: "pause.fill").font(.system(size: 12))
-                }.buttonStyle(.bordered).controlSize(.small)
-            } else {
-                Button(action: { state.clearHistory() }) {
-                    Label("Clear history", systemImage: "trash").font(.system(size: 12))
-                }
-                .buttonStyle(.bordered).controlSize(.small)
-                .disabled(state.history.isEmpty)
-            }
-        }
-        .padding(.horizontal, 16).padding(.vertical, 9)
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass").foregroundStyle(Theme.muted)
-            TextField("Search title, host, URL…", text: $state.searchText)
-                .textFieldStyle(.plain).font(.system(size: 12))
-            if !state.searchText.isEmpty {
-                Button { state.searchText = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted)
-                }.buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 11).padding(.vertical, 6)
-        .background(Theme.panel)
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line))
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-        .frame(width: 280)
-    }
-
-    // MARK: Filter bar — segmented All/Active/Done/Failed + status chips
+    // MARK: Filter bar — segmented All/Active/Done/Failed + status chips + bulk actions
 
     private var filterBar: some View {
         HStack(spacing: 10) {
@@ -171,6 +105,20 @@ struct QueueView: View {
                     Text("auto-grab").foregroundStyle(Theme.muted)
                 }.chipStyle()
             }
+
+            Button(action: { state.retryAll() }) {
+                Label("Retry all", systemImage: "arrow.clockwise").font(.system(size: 12))
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(state.count(for: .failed) == 0)
+
+            Button(action: { state.clearFinished() }) {
+                Label("Clear done", systemImage: "checkmark.broom").font(.system(size: 12))
+            }.buttonStyle(.bordered).controlSize(.small)
+
+            Button(action: { state.pauseAll() }) {
+                Label("Pause all", systemImage: "pause.fill").font(.system(size: 12))
+            }.buttonStyle(.bordered).controlSize(.small)
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
     }
@@ -197,27 +145,6 @@ struct QueueView: View {
         }
     }
 
-    // MARK: History list
-
-    @ViewBuilder private var historyList: some View {
-        if state.history.isEmpty {
-            EmptyState(icon: "clock.arrow.circlepath", title: "No history yet",
-                       message: "Finished downloads collect here after you click “Clear done”. Search and re-download any of them.")
-        } else if state.filteredHistory.isEmpty {
-            EmptyState(icon: "magnifyingglass", title: "No matches",
-                       message: "Nothing in history matches “\(state.searchText)”.")
-        } else {
-            ScrollView {
-                LazyVStack(spacing: 9) {
-                    ForEach(state.filteredHistory) { item in
-                        HistoryRow(item: item)
-                    }
-                }
-                .padding(14)
-            }
-        }
-    }
-
     private var filterIcon: String {
         switch state.filter {
         case .all: return "tray"
@@ -230,7 +157,7 @@ struct QueueView: View {
         switch state.filter {
         case .all: return "Items you add will appear here."
         case .active: return "No downloads are running or queued."
-        case .done: return "Completed downloads show up here. Use “Clear done” to archive them to History."
+        case .done: return "Completed downloads show up here. Use “Clear done” to remove them."
         case .failed: return "Nothing has failed. Failed and stopped downloads collect here."
         }
     }
@@ -455,60 +382,6 @@ struct QueueRow: View {
                 }
             }
         }
-    }
-}
-
-/// A row in the History archive: thumbnail, metadata, completion time, and
-/// re-download / reveal / delete actions.
-struct HistoryRow: View {
-    @EnvironmentObject var state: AppState
-    let item: DownloadItem
-
-    var body: some View {
-        HStack(spacing: 14) {
-            ThumbView(url: item.thumbnailURL, duration: item.durationStr)
-                .frame(width: 132, height: 74)
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text(item.displayTitle).font(.system(size: 13.5, weight: .semibold))
-                    .lineLimit(1).foregroundStyle(Theme.text)
-                HStack(spacing: 7) {
-                    Text(item.host).foregroundStyle(Theme.muted)
-                    if !item.uploader.isEmpty {
-                        Text("·").foregroundStyle(Theme.muted)
-                        Text(item.uploader).foregroundStyle(Theme.muted)
-                    }
-                }.font(.system(size: 11.5)).lineLimit(1)
-
-                HStack(spacing: 8) {
-                    StatusBadge(status: item.status)
-                    if !item.formatDesc.isEmpty { Chip(text: item.formatDesc) }
-                    if let c = item.completedAt {
-                        Label(c.formatted(date: .abbreviated, time: .shortened),
-                              systemImage: "clock")
-                            .font(.system(size: 10.5)).foregroundStyle(Theme.muted)
-                    }
-                    if !item.outputFilePath.isEmpty {
-                        Label(item.outputFilePath.components(separatedBy: "/").last ?? "",
-                              systemImage: "doc")
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(Theme.muted).lineLimit(1)
-                    }
-                }
-            }
-            Spacer()
-
-            HStack(spacing: 5) {
-                IconButton(system: "arrow.clockwise", help: "Re-download", tint: Theme.ok) { state.redownload(item.id) }
-                IconButton(system: "folder", help: "Reveal in Finder", tint: Theme.accent2) { state.reveal(item.id) }
-                IconButton(system: "trash", help: "Delete file", tint: Theme.err) { state.deleteFile(item.id) }
-                IconButton(system: "xmark", help: "Remove from history", tint: Theme.muted) { state.removeFromHistory(item.id) }
-            }
-        }
-        .padding(12)
-        .background(Theme.panel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 

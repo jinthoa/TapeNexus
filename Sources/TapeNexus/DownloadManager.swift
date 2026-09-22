@@ -63,7 +63,6 @@ final class DownloadManager {
                         }
                     }
                     $0.pid = 0
-                    if $0.status == .done || $0.status == .failed { $0.completedAt = Date() }
                 }
                 if ok { state.persist() }
                 // Notify + dock badge (only for genuinely terminal outcomes).
@@ -132,20 +131,21 @@ final class DownloadManager {
         for id in ids { retry(id) }
     }
 
-    /// Re-queue an item from history: drop it back into the live queue with the
-    /// same URL/metadata so it downloads again. The history entry is preserved.
-    func redownload(_ id: UUID) {
-        guard let state = state, let h = state.history.first(where: { $0.id == id }) else { return }
-        if state.items.contains(where: { $0.url == h.url }) { return } // already queued
-        var c = h
-        c.id = UUID()
-        c.status = .queued
-        c.progress = 0; c.errorMessage = ""; c.speedStr = ""; c.etaStr = ""
-        c.downloadedBytes = 0; c.totalBytes = 0; c.pid = 0
-        c.outputFilePath = ""; c.completedAt = nil; c.startAt = nil
-        state.items.insert(c, at: 0)
-        state.persist()
-        pump()
+    /// Like `pump()` but only launches items the user explicitly scheduled.
+    /// Used by the periodic quiet-hours tick so that — with auto-start off —
+    /// plain queued items don't start on their own; only scheduled ones fire
+    /// when their start time arrives. Explicit actions (start now, retry,
+    /// resume all) still use `pump()`.
+    func pumpScheduled() {
+        guard let state = state else { return }
+        if state.isQuietHour { return }
+        let running = state.items.filter { $0.status == .downloading }.count
+        let slots = max(0, settings().maxConcurrent - running)
+        guard slots > 0 else { return }
+        let toStart = state.items.filter { $0.status == .queued && $0.hasSchedule && $0.scheduleReady }.prefix(slots)
+        for item in toStart {
+            start(item)
+        }
     }
 
     /// Start a single queued item without starting the rest of the queue.
@@ -175,17 +175,19 @@ final class DownloadManager {
         state.persist()
     }
 
-    /// Remove finished items from the queue, archiving them to history.
+    /// Remove finished items from the queue (done / stopped / failed).
     func clearFinished() {
         guard let state = state else { return }
-        let done = state.items.filter { $0.status == .done || $0.status == .stopped || $0.status == .failed }
-        state.archiveToHistory(done)
+        let ids = Set(state.items.filter { $0.status == .done || $0.status == .stopped || $0.status == .failed }
+                      .map { $0.id })
+        state.items.removeAll { ids.contains($0.id) }
+        state.lastLog = state.lastLog.filter { !ids.contains($0.key) }
         state.persist()
     }
 
-    /// Trash the downloaded file then remove the item (from queue or history).
+    /// Trash the downloaded file then remove the item from the queue.
     func deleteFile(_ id: UUID) {
-        guard let state = state, let item = state.anyItem(id) else { return }
+        guard let state = state, let item = state.item(id) else { return }
         if !item.outputFilePath.isEmpty {
             let url = URL(fileURLWithPath: item.outputFilePath)
             try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
@@ -193,11 +195,6 @@ final class DownloadManager {
         if item.status != .done, !item.outputFilePath.isEmpty {
             try? FileManager.default.removeItem(atPath: item.outputFilePath + ".part")
         }
-        if state.item(id) != nil {
-            remove(id)
-        } else {
-            state.history.removeAll { $0.id == id }
-            state.persist()
-        }
+        remove(id)
     }
 }

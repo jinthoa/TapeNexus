@@ -56,9 +56,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
     var clipStart: String = ""       // free-text timestamp e.g. "1:23" or "83"
     var clipEnd: String = ""
 
-    // v1.0.4: scheduling + history.
-    var startAt: Date? = nil         // queued item won't start until this time (nil = now)
-    var completedAt: Date? = nil     // set when the item finishes (done/failed/stopped)
+    // v1.0.4: per-item scheduling. nil = start whenever a slot is free.
+    var startAt: Date? = nil
 
     // transient (not Codable)
     var pid: pid_t = 0
@@ -68,7 +67,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
              progress, speedStr, etaStr, formatDesc, errorMessage,
              downloadedBytes, totalBytes, outputFilePath, addedAt, pausedByUser,
              formatPreset, customFormat, clipStart, clipEnd,
-             startAt, completedAt
+             startAt
     }
 
     init(id: UUID = UUID(), url: String, title: String = "", uploader: String = "",
@@ -79,7 +78,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
          outputFilePath: String = "", addedAt: Date = Date(), pausedByUser: Bool = false,
          formatPreset: String = "", customFormat: String = "",
          clipStart: String = "", clipEnd: String = "",
-         startAt: Date? = nil, completedAt: Date? = nil) {
+         startAt: Date? = nil) {
         self.id = id; self.url = url; self.title = title; self.uploader = uploader
         self.thumbnailURL = thumbnailURL; self.durationStr = durationStr
         self.status = status; self.progress = progress; self.speedStr = speedStr
@@ -89,7 +88,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         self.addedAt = addedAt; self.pausedByUser = pausedByUser
         self.formatPreset = formatPreset; self.customFormat = customFormat
         self.clipStart = clipStart; self.clipEnd = clipEnd
-        self.startAt = startAt; self.completedAt = completedAt
+        self.startAt = startAt
     }
 
     private init(fromCore dec: Decoder) throws {
@@ -116,7 +115,6 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         clipStart = try c.decodeIfPresent(String.self, forKey: .clipStart) ?? ""
         clipEnd = try c.decodeIfPresent(String.self, forKey: .clipEnd) ?? ""
         startAt = try c.decodeIfPresent(Date.self, forKey: .startAt)
-        completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
     }
     init(from decoder: Decoder) throws { try self.init(fromCore: decoder) }
 
@@ -139,13 +137,6 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         guard let s = startAt else { return true }
         return s <= Date()
     }
-}
-
-/// Top-level view switch between the live queue and the history archive.
-enum ListMode: String, CaseIterable, Identifiable {
-    case queue, history
-    var id: String { rawValue }
-    var label: String { self == .queue ? "Queue" : "History" }
 }
 
 /// One row of `yt-dlp --list-formats` output, parsed for the format preview.

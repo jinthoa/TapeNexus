@@ -17,7 +17,7 @@ from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
 from .clipboard_monitor import ClipboardMonitor
 from .models import (
-    AppSettings, DownloadItem, FormatInfo, ListMode, extract_urls, format_label,
+    AppSettings, DownloadItem, FormatInfo, extract_urls, format_label,
     looks_like_playlist,
 )
 from .yt_dlp_controller import YTDLPController
@@ -127,15 +127,12 @@ class AppState(QObject):
         self.yt = YTDLPController()
         self.clipboard = ClipboardMonitor()
         self.items: List[DownloadItem] = []
-        self.history: List[DownloadItem] = []
         self.settings = AppSettings.default()
         self.meta_cache: Dict[str, dict] = {}
         self.skipped_count = 0
         self.paste_field = ""
         self.filter = "all"
-        # v1.0.4: queue/history mode toggle, search, format-preview state
-        self.list_mode = ListMode.queue
-        self.search_text = ""
+        # v1.0.4: format-preview state, keyed by item id
         self.format_lists: Dict[str, list] = {}
         self.formats_loading: set = set()
         self.formats_error: Dict[str, str] = {}
@@ -182,10 +179,9 @@ class AppState(QObject):
                 snap = json.load(f)
             self.items = [DownloadItem.from_dict(d) for d in snap.get("queue", [])
                           if d.get("status") not in ("downloading", "paused")]
-            self.history = [DownloadItem.from_dict(d) for d in snap.get("history", [])]
             self.meta_cache = snap.get("meta", {}) or {}
         except Exception:
-            self.items, self.history, self.meta_cache = [], [], {}
+            self.items, self.meta_cache = [], {}
         os.makedirs(self.settings.destination_folder, exist_ok=True)
 
     def _persist_settings(self) -> None:
@@ -199,7 +195,6 @@ class AppState(QObject):
     def _persist_queue(self) -> None:
         snap = {
             "queue": [it.to_dict() for it in self.items],
-            "history": [it.to_dict() for it in self.history],
             "meta": self.meta_cache,
         }
         try:
@@ -223,7 +218,7 @@ class AppState(QObject):
         return self.items[i] if i is not None else None
 
     def any_item(self, item_id: str) -> Optional[DownloadItem]:
-        return self.item(item_id) or next((h for h in self.history if h.id == item_id), None)
+        return self.item(item_id)
 
     def update(self, item_id: str, **fields) -> None:
         i = self._idx(item_id)
@@ -360,8 +355,22 @@ class AppState(QObject):
 
     def _quiet_tick(self) -> None:
         self._evaluate_quiet_hours()
-        # Re-pump so items whose scheduled start time just arrived kick off.
-        self.pump()
+        # Only launch items the user explicitly scheduled — NOT a general
+        # auto-start. With auto-start off, plain queued items must wait for the
+        # user to press Start now; only scheduled ones fire when their time lands.
+        self.pump_scheduled()
+
+    def pump_scheduled(self) -> None:
+        if self.is_quiet_hour():
+            return
+        running = sum(1 for it in self.items if it.status == "downloading")
+        slots = max(0, self.settings.max_concurrent - running)
+        if slots <= 0:
+            return
+        to_start = [it for it in self.items
+                    if it.status == "queued" and it.has_schedule and it.schedule_ready][:slots]
+        for it in to_start:
+            self._start(it)
 
     def pump(self) -> None:
         if self.is_quiet_hour():
@@ -409,13 +418,11 @@ class AppState(QObject):
             self._workers.pop(item_id, None)
             return
         if ok:
-            self.update(item_id, status="done", progress=1.0, error_message="", pid=0,
-                        completed_at=datetime.now().isoformat())
+            self.update(item_id, status="done", progress=1.0, error_message="", pid=0)
             self._persist_queue()
         else:
             if it.status == "downloading":
-                self.update(item_id, status="failed", error_message=err, pid=0,
-                            completed_at=datetime.now().isoformat())
+                self.update(item_id, status="failed", error_message=err, pid=0)
         self._workers.pop(item_id, None)
         # notify
         finished_it = self.item(item_id)
@@ -485,17 +492,10 @@ class AppState(QObject):
         self.pump()
 
     def clear_finished(self) -> None:
-        done = [it for it in self.items if it.status in ("done", "stopped", "failed")]
-        if not done:
+        done_ids = {it.id for it in self.items if it.status in ("done", "stopped", "failed")}
+        if not done_ids:
             return
-        # archive to history (reusing the items, with pid cleared + completion stamp)
-        for it in done:
-            it.pid = 0
-            if not it.completed_at:
-                it.completed_at = datetime.now().isoformat()
-        self.history = (done + self.history)[:500]
-        keep_ids = {it.id for it in done}
-        self.items = [it for it in self.items if it.id not in keep_ids]
+        self.items = [it for it in self.items if it.id not in done_ids]
         self.list_changed.emit()
         self._persist_queue()
 
@@ -504,36 +504,6 @@ class AppState(QObject):
         for it in list(self.items):
             if it.status in ("failed", "stopped"):
                 self.retry(it.id)
-
-    def redownload(self, item_id: str) -> None:
-        """Re-queue an item from history: drop it back into the live queue with
-        the same URL/metadata so it downloads again. The history entry stays."""
-        h = next((x for x in self.history if x.id == item_id), None)
-        if h is None:
-            return
-        if any(it.url == h.url for it in self.items):
-            return  # already queued
-        import uuid as _uuid
-        c = DownloadItem(
-            id=str(_uuid.uuid4()), url=h.url, title=h.title, uploader=h.uploader,
-            thumbnail=h.thumbnail, duration_str=h.duration_str, status="queued",
-            format_desc=h.format_desc, format_preset=h.format_preset,
-            custom_format=h.custom_format, added_at=datetime.now().isoformat(),
-        )
-        self.items.insert(0, c)
-        self.list_changed.emit()
-        self._persist_queue()
-        self.pump()
-
-    def remove_from_history(self, item_id: str) -> None:
-        self.history = [h for h in self.history if h.id != item_id]
-        self.list_changed.emit()
-        self._persist_queue()
-
-    def clear_history(self) -> None:
-        self.history = []
-        self.list_changed.emit()
-        self._persist_queue()
 
     def _remove(self, item_id: str) -> None:
         self.items = [it for it in self.items if it.id != item_id]
@@ -559,11 +529,7 @@ class AppState(QObject):
                 os.remove(it.output_file_path)
             except Exception:
                 pass
-        if self.item(item_id):
-            self.remove(item_id)
-        else:
-            self.history = [h for h in self.history if h.id != item_id]
-            self._persist_queue()
+        self.remove(item_id)
 
     def reveal(self, item_id: str) -> None:
         it = self.any_item(item_id)
@@ -660,31 +626,8 @@ class AppState(QObject):
             "done": "done", "failed": "failed", "stopped": "failed",
         }
         if self.filter == "all":
-            base = list(self.items)
-        else:
-            base = [it for it in self.items if bucket.get(it.status) == self.filter]
-        if self.search_text:
-            base = [it for it in base if self._matches_search(it)]
-        return base
-
-    def filtered_history(self) -> List[DownloadItem]:
-        if not self.search_text:
-            return list(self.history)
-        return [it for it in self.history if self._matches_search(it)]
-
-    def _matches_search(self, it: DownloadItem) -> bool:
-        q = self.search_text.lower()
-        if not q:
-            return True
-        if q in it.title.lower():
-            return True
-        if q in it.host.lower():
-            return True
-        if q in it.url.lower():
-            return True
-        if q in (it.uploader or "").lower():
-            return True
-        return False
+            return list(self.items)
+        return [it for it in self.items if bucket.get(it.status) == self.filter]
 
     def count_for(self, f: str) -> int:
         prev = self.filter

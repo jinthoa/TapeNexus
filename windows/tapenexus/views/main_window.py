@@ -11,14 +11,13 @@ from PySide6.QtWidgets import (
     QMenu, QMessageBox,
 )
 
-from ..models import extract_urls, looks_supported, ListMode
+from ..models import extract_urls, looks_supported
 from . import theme
-from .queue_row import QueueRow, HistoryRow
+from .queue_row import QueueRow
 from .settings_dialog import SettingsDialog
 
 
 FILTERS = [("all", "All"), ("active", "Active"), ("done", "Done"), ("failed", "Failed")]
-MODES = [(ListMode.queue, "Queue"), (ListMode.history, "History")]
 
 
 class MainWindow(QMainWindow):
@@ -79,44 +78,7 @@ class MainWindow(QMainWindow):
         header.addWidget(gear)
         root.addLayout(header)
 
-        # mode bar: Queue | History toggle + search + bulk actions (v1.0.4)
-        mb = QHBoxLayout()
-        mb.setSpacing(8)
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.setExclusive(True)
-        self.mode_buttons = {}
-        for mode, label in MODES:
-            b = QPushButton(label)
-            b.setCheckable(True)
-            b.clicked.connect(lambda _=False, m=mode: self._set_mode(m))
-            self.mode_group.addButton(b)
-            self.mode_buttons[mode] = b
-            mb.addWidget(b)
-        self.mode_buttons[ListMode.queue].setChecked(True)
-        mb.addSpacing(12)
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search title, channel, URL…")
-        self.search.setFixedWidth(280)
-        self.search.textChanged.connect(self._on_search_changed)
-        mb.addWidget(self.search)
-        mb.addStretch(1)
-        # bulk actions (visibility toggled by mode)
-        self.retry_all_btn = QPushButton("Retry all")
-        self.retry_all_btn.clicked.connect(lambda: self.state.retry_all())
-        mb.addWidget(self.retry_all_btn)
-        self.clear_btn = QPushButton("Clear done")
-        self.clear_btn.clicked.connect(lambda: self.state.clear_finished())
-        mb.addWidget(self.clear_btn)
-        self.pause_btn = QPushButton("Pause all")
-        self.pause_btn.clicked.connect(lambda: self.state.pause_all())
-        mb.addWidget(self.pause_btn)
-        self.clear_history_btn = QPushButton("Clear history")
-        self.clear_history_btn.clicked.connect(lambda: self.state.clear_history())
-        self.clear_history_btn.setVisible(False)
-        mb.addWidget(self.clear_history_btn)
-        root.addLayout(mb)
-
-        # filter bar (queue mode only)
+        # filter bar: segmented All/Active/Done/Failed + bulk actions
         fb = QHBoxLayout()
         fb.setSpacing(8)
         self.filter_group = QButtonGroup(self)
@@ -131,9 +93,16 @@ class MainWindow(QMainWindow):
             fb.addWidget(b)
         self.filter_buttons["all"].setChecked(True)
         fb.addStretch(1)
-        self.filter_bar_widget = QWidget()
-        self.filter_bar_widget.setLayout(fb)
-        root.addWidget(self.filter_bar_widget)
+        self.retry_all_btn = QPushButton("Retry all")
+        self.retry_all_btn.clicked.connect(lambda: self.state.retry_all())
+        fb.addWidget(self.retry_all_btn)
+        self.clear_btn = QPushButton("Clear done")
+        self.clear_btn.clicked.connect(lambda: self.state.clear_finished())
+        fb.addWidget(self.clear_btn)
+        self.pause_btn = QPushButton("Pause all")
+        self.pause_btn.clicked.connect(lambda: self.state.pause_all())
+        fb.addWidget(self.pause_btn)
+        root.addLayout(fb)
 
         # list
         self.scroll = QScrollArea()
@@ -165,16 +134,6 @@ class MainWindow(QMainWindow):
                 f" color: {theme.TEXT}; padding: 4px 12px; border-radius: 6px; }}"
                 f"QPushButton:checked {{ background: {theme.ACCENT}; color: #0e1014; }}"
             )
-        for b in self.mode_buttons.values():
-            b.setStyleSheet(
-                f"QPushButton {{ background: {theme.PANEL}; border: 1px solid {theme.LINE};"
-                f" color: {theme.TEXT}; padding: 5px 16px; border-radius: 6px; font-weight: 600; }}"
-                f"QPushButton:checked {{ background: {theme.ACCENT}; color: #0e1014; }}"
-            )
-        self.search.setStyleSheet(
-            f"QLineEdit {{ background: {theme.PANEL}; border: 1px solid {theme.LINE};"
-            f" color: {theme.TEXT}; padding: 5px 10px; border-radius: 6px; }}"
-        )
 
     def _build_menu(self) -> None:
         m = self.menuBar()
@@ -219,21 +178,6 @@ class MainWindow(QMainWindow):
         self.state.filter = key
         self._rebuild_list()
 
-    def _set_mode(self, mode) -> None:
-        self.state.list_mode = mode
-        # bulk-action visibility per mode
-        is_queue = mode == ListMode.queue
-        self.filter_bar_widget.setVisible(is_queue)
-        self.retry_all_btn.setVisible(is_queue)
-        self.clear_btn.setVisible(is_queue)
-        self.pause_btn.setVisible(is_queue)
-        self.clear_history_btn.setVisible(not is_queue)
-        self._rebuild_list()
-
-    def _on_search_changed(self, text: str) -> None:
-        self.state.search_text = text
-        self._rebuild_list()
-
     def _on_skipped(self, n: int) -> None:
         if n > 0:
             self.statusBar().showMessage(f"{n} copied link(s) skipped — not supported by yt-dlp.", 5000)
@@ -243,12 +187,7 @@ class MainWindow(QMainWindow):
 
     # ── list rendering ──────────────────────────────────────────────────────
     def _rebuild_list(self) -> None:
-        if self.state.list_mode == ListMode.history:
-            items = self.state.filtered_history()
-            row_factory = lambda it: HistoryRow(self.state, it)
-        else:
-            items = self.state.filtered_items()
-            row_factory = lambda it: QueueRow(self.state, it)
+        items = self.state.filtered_items()
         live_ids = {it.id for it in items}
         for gid in list(self.rows.keys()):
             if gid not in live_ids:
@@ -262,23 +201,15 @@ class MainWindow(QMainWindow):
                 self.list_layout.removeWidget(w)
         self.rows.clear()
         for it in items:
-            row = row_factory(it)
+            row = QueueRow(self.state, it)
             self.rows[it.id] = row
             self.list_layout.insertWidget(self.list_layout.count() - 1, row)
         self.empty.setVisible(not items)
-        if not items:
-            if self.state.list_mode == ListMode.history:
-                self.empty.setText("No history yet.\nFinished downloads you clear from the queue land here.")
-            else:
-                self.empty.setText("Nothing here yet.\nCopy a video URL anywhere — supported links are added automatically.\nOr paste one above.")
-        self._refresh_mode_counts()
         self._refresh_filter_counts()
 
     def _on_item_changed(self, item_id: str) -> None:
         # status transitions may move the item between filters
         it = self.state.item(item_id)
-        if it is None and self.state.list_mode == ListMode.history:
-            it = next((h for h in self.state.history if h.id == item_id), None)
         if it is None:
             return
         if item_id in self.rows:
@@ -287,19 +218,10 @@ class MainWindow(QMainWindow):
             # it became visible under the current filter → rebuild
             self._rebuild_list()
         self._refresh_filter_counts()
-        self._refresh_mode_counts()
 
     def _refresh_filter_counts(self) -> None:
         for key, _label in FILTERS:
             self.filter_buttons[key].setText(f"{_label} · {self.state.count_for(key)}")
-
-    def _refresh_mode_counts(self) -> None:
-        for mode, label in MODES:
-            if mode == ListMode.queue:
-                n = len(self.state.items)
-            else:
-                n = len(self.state.history)
-            self.mode_buttons[mode].setText(f"{label} · {n}")
 
     # ── drag & drop ─────────────────────────────────────────────────────────
     def dragEnterEvent(self, e: QDragEnterEvent) -> None:

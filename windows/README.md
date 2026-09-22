@@ -49,13 +49,12 @@ The `.github/workflows/build-windows.yml` workflow builds the `.exe` on
 attaches the single `.exe` to that release. So the Windows binary is produced
 without anyone needing a Windows machine locally.
 
-## Feature parity with v1.0.4 (macOS)
+## Feature parity with v1.0.5 (macOS)
 
 - Clipboard auto-grab + paste + drag-and-drop (URLs or a `.txt` file)
-- Queue + **History** two-tab view with live counts and search across title /
-  channel / host / URL; re-download, reveal, or remove history entries; **Retry
-  all** re-queues every failed/stopped item in one click
-- Queue with All / Active / Done / Failed filter, live progress, speed, ETA
+- Queue with All / Active / Done / Failed filter, live progress, speed, ETA;
+  **Retry all** re-queues every failed/stopped item in one click; "Clear done"
+  removes finished items
 - Per-item pause / resume / stop / retry / reveal / remove / delete file
   (pause/resume use `psutil` process suspend/resume — Windows has no SIGSTOP)
 - Per-item format picker + time-range clip editor on queued rows

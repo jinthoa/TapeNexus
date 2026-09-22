@@ -5,11 +5,8 @@ import AppKit
 @MainActor
 final class AppState: ObservableObject {
     @Published var items: [DownloadItem] = []
-    @Published var history: [DownloadItem] = []
     @Published var settings: AppSettings
     @Published var filter: StatusFilter = .all
-    @Published var listMode: ListMode = .queue
-    @Published var searchText: String = ""
     @Published var showSettings: Bool = false
     @Published var updateStatus = UpdateStatus()
     @Published var appUpdateStatus = AppUpdateStatus()
@@ -47,7 +44,6 @@ final class AppState: ObservableObject {
 
         // hydrate persisted queue
         self.items = store.queue
-        self.history = store.history
         // any items mid-resolve when the app last quit would be stuck; drop them back
         // to Queued so they aren't perpetually "Resolving" with no metadata.
         for i in items.indices where items[i].status == .resolving {
@@ -105,9 +101,9 @@ final class AppState: ObservableObject {
 
     func item(_ id: UUID) -> DownloadItem? { items.first(where: { $0.id == id }) }
 
-    /// looks in both the live queue and history
+    /// looks up an item in the live queue
     func anyItem(_ id: UUID) -> DownloadItem? {
-        items.first(where: { $0.id == id }) ?? history.first(where: { $0.id == id })
+        items.first(where: { $0.id == id })
     }
 
     func update(_ id: UUID, _ mutate: (inout DownloadItem) -> Void) {
@@ -131,19 +127,7 @@ final class AppState: ObservableObject {
         lastLog.removeValue(forKey: id)
     }
 
-    func archiveToHistory(_ done: [DownloadItem]) {
-        history.insert(contentsOf: done.map {
-            var c = $0; c.pid = 0
-            if c.completedAt == nil { c.completedAt = Date() }
-            return c
-        }, at: 0)
-        if history.count > 500 { history.removeLast(history.count - 500) }
-        let ids = Set(done.map { $0.id })
-        items.removeAll { ids.contains($0.id) }
-        lastLog = lastLog.filter { !ids.contains($0.key) }
-    }
-
-    func persist() { store.queue = items; store.history = history; store.persistQueue() }
+    func persist() { store.queue = items; store.persistQueue() }
 
     // MARK: - Adding URLs
 
@@ -277,18 +261,6 @@ final class AppState: ObservableObject {
     func clearFinished() { downloads.clearFinished() }
     func remove(_ id: UUID) { downloads.remove(id) }
     func deleteFile(_ id: UUID) { downloads.deleteFile(id) }
-    /// Re-download an item from the history archive.
-    func redownload(_ id: UUID) { downloads.redownload(id) }
-    /// Remove a single item from history (keeps the downloaded file).
-    func removeFromHistory(_ id: UUID) {
-        history.removeAll { $0.id == id }
-        persist()
-    }
-    /// Empty the whole history archive (does not touch downloaded files).
-    func clearHistory() {
-        history.removeAll()
-        persist()
-    }
 
     func reveal(_ id: UUID) {
         guard let p = anyItem(id)?.outputFilePath, !p.isEmpty else { return }
@@ -413,8 +385,10 @@ final class AppState: ObservableObject {
         t.schedule(deadline: .now() + 60, repeating: 60)
         t.setEventHandler { [weak self] in
             self?.evaluateQuietHours()
-            // Re-pump so items whose scheduled start time just arrived kick off.
-            self?.downloads.pump()
+            // Only launch items the user explicitly scheduled — NOT a general
+            // auto-start. With auto-start off, plain queued items must wait for
+            // the user to press ▶; only scheduled ones fire when their time lands.
+            self?.downloads.pumpScheduled()
         }
         t.resume()
         quietTimer = t
@@ -448,31 +422,14 @@ final class AppState: ObservableObject {
     // MARK: - Filter (approach A: unified list)
 
     /// Items visible under the current segmented filter. The list is the single
-    /// `items` array — done/failed stay in it until "Clear done" archives them.
+    /// `items` array — done/failed stay in it until "Clear done" removes them.
     var filteredItems: [DownloadItem] {
-        let bucketed: [DownloadItem]
         switch filter {
-        case .all: bucketed = items
-        case .active: bucketed = items.filter { $0.status.filterBucket == .active }
-        case .done: bucketed = items.filter { $0.status.filterBucket == .done }
-        case .failed: bucketed = items.filter { $0.status.filterBucket == .failed }
+        case .all: return items
+        case .active: return items.filter { $0.status.filterBucket == .active }
+        case .done: return items.filter { $0.status.filterBucket == .done }
+        case .failed: return items.filter { $0.status.filterBucket == .failed }
         }
-        return searchText.isEmpty ? bucketed : bucketed.filter { matchesSearch($0) }
-    }
-
-    /// History entries filtered by the current search text.
-    var filteredHistory: [DownloadItem] {
-        searchText.isEmpty ? history : history.filter { matchesSearch($0) }
-    }
-
-    private func matchesSearch(_ item: DownloadItem) -> Bool {
-        let q = searchText.lowercased()
-        if q.isEmpty { return true }
-        if item.title.lowercased().contains(q) { return true }
-        if item.host.lowercased().contains(q) { return true }
-        if item.url.lowercased().contains(q) { return true }
-        if item.uploader.lowercased().contains(q) { return true }
-        return false
     }
 
     func count(for f: StatusFilter) -> Int {
