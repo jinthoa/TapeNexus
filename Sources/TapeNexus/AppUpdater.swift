@@ -65,25 +65,33 @@ final class AppUpdater {
                          state: .failed, message: "Download failed."))
             return
         }
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("TapeNexus-\(UUID().uuidString).pkg")
+        // Save to ~/Downloads (stable, user-visible, matches the README's install
+        // path) rather than the private temp dir, which can be cleaned and is
+        // awkward to hand to Installer.
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/Downloads")
+        let fname = latest.drop(while: { $0 == "v" || $0 == "V" })
+        let dest = downloads.appendingPathComponent("TapeNexus-\(fname).pkg")
+        try? FileManager.default.removeItem(at: dest)   // stale copy from a prior check
         do {
-            try data.write(to: tmp, options: .atomic)
-            // Hand off to Installer.app; it prompts for admin and replaces
-            // /Applications/TapeNexus.app. The user quits + relaunches after.
-            NSWorkspace.shared.openApplication(
-                at: URL(fileURLWithPath: "/System/Applications/Utilities/Installer.app"),
-                configuration: NSWorkspace.OpenConfiguration())
-            // Hand the downloaded .pkg to Installer once it's launched.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                NSWorkspace.shared.open(tmp)
+            try data.write(to: dest, options: .atomic)
+            // Open the .pkg directly: macOS launches Installer.app with it as the
+            // document to install. (Pre-launching Installer bare and then opening
+            // the pkg on a delay is racy and surfaces a spurious "file can't be
+            // found" alert before the package is handed over.)
+            let opened = NSWorkspace.shared.open(dest)
+            if opened {
+                report(.init(currentVersion: currentVersion, latestVersion: latest,
+                             state: .ready,
+                             message: "Opened installer for \(latest). Quit Tape Nexus to install."))
+            } else {
+                report(.init(currentVersion: currentVersion, latestVersion: latest,
+                             state: .failed,
+                             message: "Saved \(dest.lastPathComponent) to Downloads but couldn't open Installer. Double-click it to install."))
             }
-            report(.init(currentVersion: currentVersion, latestVersion: latest,
-                         state: .ready,
-                         message: "Opened installer for \(latest). Quit Tape Nexus to install."))
         } catch {
             report(.init(currentVersion: currentVersion, latestVersion: latest,
-                         state: .failed, message: "Could not open installer: \(error.localizedDescription)"))
+                         state: .failed, message: "Could not save installer: \(error.localizedDescription)"))
         }
     }
 

@@ -7,10 +7,10 @@ A native macOS app that watches your clipboard, queues any URL **yt-dlp supports
 ## Download & install
 
 ### macOS
-1. Download **`TapeNexus-1.0.5.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.6.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. Install it:
    ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.5.pkg -target /
+   sudo installer -pkg ~/Downloads/TapeNexus-1.0.6.pkg -target /
    ```
 3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
    ```bash
