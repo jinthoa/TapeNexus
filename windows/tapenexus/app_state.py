@@ -48,6 +48,7 @@ class DownloadWorker(QObject):
         self.proc.setArguments(args)
         self._buf_out = ""
         self._buf_err = ""
+        self._last_err = ""  # last yt-dlp ERROR line, to surface as the failure reason
         self.proc.readyReadStandardOutput.connect(self._on_out)
         self.proc.readyReadStandardError.connect(self._on_err)
         self.proc.finished.connect(self._on_finished)
@@ -75,6 +76,8 @@ class DownloadWorker(QObject):
             line, self._buf_err = self._buf_err.split("\n", 1)
             t = line.strip()
             if t and not ("% of" in t and "ETA" in t):
+                if t.startswith("ERROR"):
+                    self._last_err = t
                 self.log.emit(self.item_id, t)
 
     def _handle(self, line: str) -> None:
@@ -94,7 +97,8 @@ class DownloadWorker(QObject):
 
     def _on_finished(self, code, _status) -> None:
         ok = code == 0
-        self.finished.emit(self.item_id, ok, "" if ok else f"yt-dlp exited with code {code}")
+        err = "" if ok else (self._last_err or f"yt-dlp exited with code {code}")
+        self.finished.emit(self.item_id, ok, err)
 
 
 def _suspend_tree(pid: int) -> None:
@@ -152,6 +156,9 @@ class AppState(QObject):
         # Timestamp of the most recently scheduled launch, for staggering
         # starts by download_delay_seconds.
         self._last_start_at = None
+        # Item ids that already retried once without browser cookies after a
+        # cookies-read failure, so we don't loop. Transient — not persisted.
+        self._cookies_retried: set = set()
 
         self._load()
         self._meta_pool = ThreadPoolExecutor(
@@ -434,8 +441,8 @@ class AppState(QObject):
         self._start(it)
 
     # ── download lifecycle ──────────────────────────────────────────────────
-    def _start(self, item: DownloadItem) -> None:
-        args = self.yt.build_args(item, self.settings)
+    def _start(self, item: DownloadItem, suppress_cookies: bool = False) -> None:
+        args = self.yt.build_args(item, self.settings, suppress_cookies=suppress_cookies)
         worker = DownloadWorker(item.id, self.yt.binary, args)
         worker.progress.connect(self._on_progress)
         worker.filepath.connect(self._on_filepath)
@@ -464,6 +471,17 @@ class AppState(QObject):
         it = self.item(item_id)
         if it is None:
             self._workers.pop(item_id, None)
+            return
+        # Cookies fallback: if browser cookies were used for this attempt and
+        # yt-dlp failed before any download progress (an extraction-time failure
+        # — typically it couldn't read the browser's cookie store), retry once
+        # without cookies so public content still downloads even when the
+        # cookies environment is broken.
+        used_cookies = bool(self.settings.cookies_browser) and item_id not in self._cookies_retried
+        if not ok and used_cookies and it.progress <= 0.001:
+            self._workers.pop(item_id, None)
+            self._cookies_retried.add(item_id)
+            self._start(it, suppress_cookies=True)
             return
         if ok:
             self.update(item_id, status="done", progress=1.0, error_message="", pid=0)
@@ -518,6 +536,7 @@ class AppState(QObject):
             return
         if it.status in ("downloading", "paused"):
             self.stop(item_id)
+        self._cookies_retried.discard(item_id)
         self.update(item_id, status="queued", progress=0.0, error_message="",
                     speed_str="", eta_str="", downloaded_bytes=0, total_bytes=0, pid=0)
         self._persist_queue()
@@ -544,6 +563,8 @@ class AppState(QObject):
         if not done_ids:
             return
         self.items = [it for it in self.items if it.id not in done_ids]
+        for iid in done_ids:
+            self._cookies_retried.discard(iid)
         self.list_changed.emit()
         self._persist_queue()
 
@@ -556,6 +577,7 @@ class AppState(QObject):
     def _remove(self, item_id: str) -> None:
         self.items = [it for it in self.items if it.id != item_id]
         self._workers.pop(item_id, None)
+        self._cookies_retried.discard(item_id)
         self.list_changed.emit()
 
     def remove(self, item_id: str) -> None:

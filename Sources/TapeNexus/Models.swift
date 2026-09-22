@@ -61,6 +61,9 @@ struct DownloadItem: Identifiable, Codable, Hashable {
 
     // transient (not Codable)
     var pid: pid_t = 0
+    /// True once we've already retried this item without browser cookies after
+    /// a cookies-read failure, so we don't loop. Transient — not persisted.
+    var cookiesRetried: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id, url, title, uploader, thumbnailURL, durationStr, status,

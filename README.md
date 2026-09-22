@@ -22,7 +22,8 @@ A quick tour of what's in the box, including the recently added features:
 - **Format preview** *(recent)* — "Show available formats…" runs `--list-formats` and lists every resolution / bitrate / size the link offers, so the format picker is informed instead of guessed. Picking a row applies it as a custom `-f`.
 - **Per-item scheduling** *(recent)* — schedule a queued item to start at a later time, layered on top of global quiet hours. The scheduler re-checks every minute and only starts scheduled items, so auto-start being off is always respected.
 - **Quiet hours** — automatically pause all downloads during a time window and resume when it ends.
-- **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium for age-restricted, members-only, and login-gated content.
+- **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium for age-restricted, members-only, and login-gated content. If the chosen browser's cookie store can't be read (locked DB, schema change, Keychain denied), Tape Nexus automatically retries once without cookies so public content still downloads instead of failing silently.
+- **Real failure reasons** *(recent)* — when a download fails, the actual yt-dlp error line (not just an opaque "exit code 1") is surfaced on the item and in notifications, so you can see *why* it failed.
 - **Playlist expansion + per-host organization** — expand a playlist link into one item per video (capped); optionally file downloads into `<site>/<title>.<ext>`.
 - **Source-friendly throttling** *(recent)* — metadata lookups run at most `max_concurrent` at a time (not all at once), and an optional **delay between starts** spaces out downloads, so adding a big playlist or batch doesn't get you IP-throttled by the source site.
 - **Subtitle language picker, SponsorBlock, metadata/subtitle embedding**.
@@ -37,10 +38,10 @@ A quick tour of what's in the box, including the recently added features:
 ## Download & install
 
 ### macOS
-1. Download **`TapeNexus-1.0.7.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.8.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. Install it:
    ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.7.pkg -target /
+   sudo installer -pkg ~/Downloads/TapeNexus-1.0.8.pkg -target /
    ```
 3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
    ```bash
@@ -67,6 +68,7 @@ The Windows `.exe` is built by GitHub Actions (`.github/workflows/build-windows.
 - **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium so age-restricted, members-only, and login-gated content downloads.
 - **Playlist expansion** — optionally expand a playlist link into one queue item per video (capped).
 - **Throttled metadata + download delay** — metadata (`--simulate`) probes run at most `maxConcurrent` at a time, so expanding a large playlist or batch-pasting URLs doesn't fire dozens of requests at the source site at once (which gets you rate-limited / 429'd). An optional **delay between starts** (0–30s, default off) further spaces out downloads.
+- **Resilient cookies + real error messages** — if `--cookies-from-browser` fails at extraction time (the browser's cookie store is locked or unreadable on that machine), Tape Nexus falls back to a single cookieless retry so public content still downloads. And when a download fails, the actual yt-dlp `ERROR:` line is shown on the item instead of a generic exit-code message.
 - **Per-host organization** — optionally file downloads into `<site>/<title>.<ext>` (e.g. `YouTube/…`) instead of a flat folder.
 - **Subtitle language picker** — choose which subtitle languages to embed.
 - **Completion notifications + Dock badge** — native macOS notification when a download finishes or fails; Dock badge shows the active count.

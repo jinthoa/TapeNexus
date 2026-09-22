@@ -35,12 +35,12 @@ final class DownloadManager {
         scheduleStarts(toStart)
     }
 
-    func start(_ item: DownloadItem) {
+    func start(_ item: DownloadItem, suppressCookies: Bool = false) {
         guard let state = state else { return }
         state.update(item.id) { $0.status = .downloading; $0.progress = 0; $0.speedStr = ""; $0.etaStr = ""; $0.errorMessage = "" }
         let s = settings()
         let id = item.id
-        let pid = yt.startDownload(item: item, settings: s,
+        let pid = yt.startDownload(item: item, settings: s, suppressCookies: suppressCookies,
             onProgress: { [weak state] p, speed, eta, dl, tot in
                 state?.update(id) {
                     $0.progress = p; $0.speedStr = speed; $0.etaStr = eta
@@ -56,6 +56,22 @@ final class DownloadManager {
             },
             onComplete: { [weak self, weak state] ok, err in
                 guard let self = self, let state = state else { return }
+                let finished = state.item(id)
+                // Cookies fallback: if browser cookies were used for this attempt
+                // and yt-dlp failed before any download progress (an extraction-
+                // time failure — typically it couldn't read the browser's cookie
+                // store), retry once without cookies so public content still
+                // downloads even when the cookies environment is broken.
+                if !ok, let it = finished,
+                   !suppressCookies,
+                   !it.cookiesRetried,
+                   !state.settings.cookiesBrowser.isEmpty,
+                   it.progress <= 0.001 {
+                    state.update(id) { $0.cookiesRetried = true }
+                    self.start(it, suppressCookies: true)
+                    state.refreshBadge()
+                    return
+                }
                 state.update(id) {
                     if ok {
                         $0.status = .done; $0.progress = 1; $0.errorMessage = ""
@@ -69,8 +85,8 @@ final class DownloadManager {
                 }
                 if ok { state.persist() }
                 // Notify + dock badge (only for genuinely terminal outcomes).
-                let finished = state.item(id)
-                if let it = finished, (it.status == .done || it.status == .failed),
+                let finished2 = state.item(id)
+                if let it = finished2, (it.status == .done || it.status == .failed),
                    state.settings.notifyOnComplete {
                     Notifier.shared.post(
                         title: ok ? "Download complete" : "Download failed",
@@ -121,7 +137,7 @@ final class DownloadManager {
         state.update(id) {
             $0.status = .queued; $0.progress = 0; $0.errorMessage = ""
             $0.speedStr = ""; $0.etaStr = ""; $0.downloadedBytes = 0
-            $0.totalBytes = 0; $0.pid = 0
+            $0.totalBytes = 0; $0.pid = 0; $0.cookiesRetried = false
         }
         state.persist()
         pump()

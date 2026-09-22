@@ -231,7 +231,8 @@ class YTDLPController:
                           size_str=size_str, tbr=tbr, kind=kind)
 
     # ── download args ──────────────────────────────────────────────────────────
-    def build_args(self, item: DownloadItem, settings: AppSettings) -> List[str]:
+    def build_args(self, item: DownloadItem, settings: AppSettings,
+                   suppress_cookies: bool = False) -> List[str]:
         preset = item.format_preset or settings.format_preset
         custom = item.custom_format if item.format_preset else settings.custom_format
         dest = settings.destination_folder
@@ -246,7 +247,7 @@ class YTDLPController:
             "--progress-template", "postprocess:PJ %(progress)j",
             "--print", "after_move:FILEPATH:%(filepath)s",
         ]
-        if settings.cookies_browser:
+        if settings.cookies_browser and not suppress_cookies:
             args += ["--cookies-from-browser", settings.cookies_browser]
         if item.has_clip:
             start = item.clip_start or "0"

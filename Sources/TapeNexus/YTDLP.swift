@@ -279,6 +279,7 @@ final class YTDLPController: @unchecked Sendable {
     /// Calls callbacks on a private background queue (caller hops to main).
     func startDownload(item: DownloadItem,
                        settings: AppSettings,
+                       suppressCookies: Bool = false,
                        onProgress: @escaping (Double, String, String, Int64, Int64) -> Void,
                        onFilePath: @escaping (String) -> Void,
                        onLog: @escaping (String) -> Void,
@@ -300,13 +301,19 @@ final class YTDLPController: @unchecked Sendable {
         // (master read 0 bytes). The real cause was always the missing
         // --progress flag — verified by a raw-pipe run that streamed 632 DJ
         // lines over a single short download.
-        let ytArgs = buildArgs(item: item, settings: settings)
+        let ytArgs = buildArgs(item: item, settings: settings, suppressCookies: suppressCookies)
         p.executableURL = binaryURL
         p.arguments = ytArgs
         let outPipe = Pipe(); let errPipe = Pipe()
         p.standardOutput = outPipe
         p.standardError = errPipe
-        Self.debugLog("START yt-dlp url=\(item.url)")
+        Self.debugLog("START yt-dlp url=\(item.url) cookies=\(suppressCookies ? "off" : "on")")
+        // Capture yt-dlp's real ERROR line so a failure surfaces the actual
+        // reason (e.g. "ERROR: could not read chrome cookies") instead of a
+        // generic "exited with code 1". Reference type so the escaping stderr
+        // reader and the completion handler share one slot.
+        final class ErrBox { var errLine: String = "" }
+        let errBox = ErrBox()
 
         do {
             try p.run()
@@ -343,21 +350,27 @@ final class YTDLPController: @unchecked Sendable {
         readLines(errPipe.fileHandleForReading) { line in
             let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
             let isProgressBar = t.contains("% of") && t.contains("ETA")
-            if !t.isEmpty && !isProgressBar { mainLog(t) }
+            if !t.isEmpty && !isProgressBar {
+                if t.hasPrefix("ERROR") { errBox.errLine = t }
+                mainLog(t)
+            }
         }
 
         DispatchQueue.global().async {
             p.waitUntilExit()
             let code = Int(p.terminationStatus)
             Thread.sleep(forTimeInterval: 0.1) // let FILEPATH line flush
+            let msg = errBox.errLine.isEmpty
+                ? "yt-dlp exited with code \(code)"
+                : errBox.errLine
             DispatchQueue.main.async {
-                onComplete(code == 0, code == 0 ? "" : "yt-dlp exited with code \(code)")
+                onComplete(code == 0, code == 0 ? "" : msg)
             }
         }
         return pid
     }
 
-    private func buildArgs(item: DownloadItem, settings: AppSettings) -> [String] {
+    private func buildArgs(item: DownloadItem, settings: AppSettings, suppressCookies: Bool = false) -> [String] {
         let dest = settings.destinationFolder
         // Per-item format override falls back to the global setting.
         let preset = item.formatPreset.isEmpty ? settings.formatPreset : item.formatPreset
@@ -384,8 +397,10 @@ final class YTDLPController: @unchecked Sendable {
             "--print", "after_move:FILEPATH:%(filepath)s",
         ]
         // Auth: read cookies from a browser profile so age-restricted /
-        // members-only / login-gated content can be downloaded.
-        if !settings.cookiesBrowser.isEmpty {
+        // members-only / login-gated content can be downloaded. Suppressed on a
+        // cookies-fallback retry (a broken cookies environment shouldn't take
+        // down downloads of public content).
+        if !settings.cookiesBrowser.isEmpty && !suppressCookies {
             args += ["--cookies-from-browser", settings.cookiesBrowser]
         }
         // Time-range clip. yt-dlp's --download-sections takes "*START-END";
