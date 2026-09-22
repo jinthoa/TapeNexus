@@ -156,8 +156,13 @@ struct AppSettings: Codable, Equatable {
         ("1080p",  "Up to 1080p",       "bestvideo[height<=1080]+bestaudio/best[height<=1080]"),
         ("720p",   "Up to 720p",        "bestvideo[height<=720]+bestaudio/best[height<=720]"),
         ("audio",  "Audio only (m4a)",  "bestaudio/best"),
+        ("mp3",    "Audio only (MP3)",  "bestaudio/best"),
         ("custom", "Custom…",           "")
     ]
+
+    /// Presets that re-encode to a specific audio container via
+    /// `--extract-audio --audio-format <ext>`.
+    static let audioExtractFormats: [String: String] = ["mp3": "mp3"]
 
     static let cookieBrowsers: [(key: String, label: String)] = [
         ("",         "None"),

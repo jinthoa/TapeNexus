@@ -1,21 +1,29 @@
 # Tape Nexus
 
-A native macOS app that watches your clipboard, queues any URL **yt-dlp supports**, and downloads it through `yt-dlp` — with a sleek dashboard UI, full per-item control, settings, and automatic yt-dlp updates on launch.
+A native macOS app that watches your clipboard, queues any URL **yt-dlp supports**, and downloads it through `yt-dlp` — with a sleek dashboard UI, full per-item control, settings, and automatic yt-dlp updates on launch. A **Windows port** (Python + PySide6) is built alongside it from the same releases.
 
 > Personal-use build: ad-hoc signed, **not notarized** (no paid Developer ID). Install + clear quarantine once and you're set.
 
 ## Download & install
 
-1. Download **`TapeNexus-1.0.2.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+### macOS
+1. Download **`TapeNexus-1.0.3.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. Install it:
    ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.2.pkg -target /
+   sudo installer -pkg ~/Downloads/TapeNexus-1.0.3.pkg -target /
    ```
 3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
    ```bash
    xattr -dr com.apple.quarantine /Applications/TapeNexus.app
    ```
 4. Launch from `/Applications` (right-click → **Open** the first time).
+
+### Windows
+1. Download **`TapeNexus-<ver>-win64.zip`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest) and unzip it anywhere.
+2. Run `TapeNexus.exe`. `yt-dlp.exe` + `ffmpeg.exe` are bundled — no separate install.
+3. SmartScreen may warn on first launch (unsigned) → **More info → Run anyway**.
+
+The Windows `.exe` is built by GitHub Actions (`.github/workflows/build-windows.yml`) on `windows-latest` whenever a `v*` tag is pushed, so it's produced at zero cost with no Windows machine. See [`windows/README.md`](windows/README.md) to run from source or build it yourself.
 
 ## Features
 
@@ -31,7 +39,7 @@ A native macOS app that watches your clipboard, queues any URL **yt-dlp supports
 - **Completion notifications + Dock badge** — native macOS notification when a download finishes or fails; Dock badge shows the active count.
 - **Menu-bar mode** — run Tape Nexus as a status-bar-only app (no Dock icon); close the window to background it, use the status icon to bring it back.
 - **Quiet hours** — automatically pause all downloads during a time window and resume when it ends.
-- **Settings sheet** (`⌘,`) — destination folder, default format (Best / 1080p / 720p / Audio / Custom `-f`), concurrent downloads (1–4), clipboard poll interval, SponsorBlock, embed metadata, embed subtitles, plus all of the above.
+- **Settings sheet** (`⌘,`) — destination folder, default format (Best / 1080p / 720p / Audio m4a / **Audio MP3** / Custom `-f`), concurrent downloads (1–4), clipboard poll interval, SponsorBlock, embed metadata, embed subtitles, plus all of the above.
 - **Auto-start on detection** — optional (default **off**). When off, detected URLs queue up and wait for you to hit ▶ Start now.
 - **yt-dlp auto-update on launch** — fetches the latest macOS binary from GitHub and atomically swaps it. Can be disabled; manual "Check now" in Settings.
 - **Persistence** — queue + history survive restarts (stored in `~/Library/Application Support/TapeNexus/`). Resolved metadata is cached, so re-copied links don't re-hit the network with `--simulate`.

@@ -339,6 +339,11 @@ final class YTDLPController: @unchecked Sendable {
             else { section = "*\(start)-\(item.clipEnd)" }
             args += ["--download-sections", section, "--force-keyframes-at-cuts"]
         }
+        // Audio extraction presets (e.g. MP3): re-encode bestaudio to the target
+        // container. Requires the bundled ffmpeg, which is already located above.
+        if let audioFmt = AppSettings.audioExtractFormats[preset] {
+            args += ["--extract-audio", "--audio-format", audioFmt]
+        }
         if settings.sponsorBlock {
             args += ["--sponsorblock-remove", "default"]
         }

@@ -1,0 +1,52 @@
+name: Build Windows
+
+# Builds the Windows port with PyInstaller on CI (free for public repos) and
+# attaches the .zip to the release that triggered the run. This is how the
+# Windows .exe is produced at zero cost — no Windows machine required locally.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: windows
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build .exe
+        working-directory: windows
+        env:
+          TN_VERSION: ${{ github.ref_name }}
+        run: python build.py
+
+      - name: Upload asset to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TN_VERSION: ${{ github.ref_name }}
+        working-directory: windows
+        run: |
+          $tag = $env:TN_VERSION
+          if (-not $tag -or $tag -eq "v") { $tag = "v1.0.3" }
+          # Create the release if it doesn't already exist; ignore the error if it does.
+          gh release create $tag --title "Tape Nexus $tag" --notes "Tape Nexus $tag" 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "release $tag already exists" }
+          # Upload whatever zip build.py produced.
+          $zip = Get-ChildItem dist\TapeNexus-*-win64.zip | Select-Object -First 1
+          gh release upload $tag $zip.FullName --clobber
