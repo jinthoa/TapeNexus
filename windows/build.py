@@ -63,7 +63,10 @@ def build() -> None:
         "--distpath", os.path.join(ROOT, "dist"),
         "--workpath", os.path.join(ROOT, "build_tmp"),
         "--specpath", os.path.join(ROOT, "build_tmp"),
-        "--add-data", os.path.join("tapenexus", "bin") + sep + "bin",
+        # Absolute source path: with --specpath set, PyInstaller resolves
+        # relative --add-data sources against the spec dir (build_tmp), not
+        # CWD, so a relative "tapenexus/bin" would not be found.
+        "--add-data", os.path.join(ROOT, "tapenexus", "bin") + sep + "bin",
         "--collect-all", "PySide6",
         "--hidden-import", "PySide6.QtNetwork",
         "--hidden-import", "PySide6.QtWidgets",
