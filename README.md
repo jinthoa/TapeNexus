@@ -1,6 +1,35 @@
 # Tape Nexus
 
+<!-- TODO: screenshot — replace with your own -->
+![Tape Nexus](docs/screenshot.png)
+
 A native macOS app that watches your clipboard, queues any URL **yt-dlp supports**, and downloads it through `yt-dlp` — with a sleek dashboard UI, full per-item control, settings, and automatic yt-dlp updates on launch. A **Windows port** (Python + PySide6) is built alongside it from the same releases.
+
+## What it does
+
+Copy a link — Tape Nexus notices it, verifies it's something yt-dlp can actually download (via `--simulate`), and drops it into a queue. You start the downloads when you're ready (auto-start is off by default). Each item shows a thumbnail, title, host, chosen format, live progress, speed, ETA, and byte counts, with per-item pause / resume / stop / retry / reveal / remove / delete. It's a single-window dashboard for grabbing video and audio from the hundreds of sites yt-dlp supports, without ever touching the command line.
+
+`yt-dlp` + `ffmpeg` are bundled, so it works out of the box. Cookies can be pulled from your browser for login-gated content, playlists can be expanded one-item-per-video, and downloads can be organized into per-host folders. A Windows build ships from the same releases as a single portable `.exe`.
+
+## Highlights
+
+A quick tour of what's in the box, including the recently added features:
+
+- **Clipboard auto-grab + paste/drag** — detects copied URLs and queues only the ones yt-dlp supports; paste a block of URLs or drop a `.txt` file to queue them all at once.
+- **Single-window dashboard** — dark UI, one unified list with All / Active / Done / Failed filters, live progress, speed, and ETA.
+- **Per-item controls** — pause · resume · stop · retry · reveal · remove · delete file, plus a per-row format picker and time-range **clip** editor on queued items.
+- **Retry all** — re-queues every failed or stopped item in one click; "Clear done" sweeps finished items out of the list.
+- **Format preview** *(recent)* — "Show available formats…" runs `--list-formats` and lists every resolution / bitrate / size the link offers, so the format picker is informed instead of guessed. Picking a row applies it as a custom `-f`.
+- **Per-item scheduling** *(recent)* — schedule a queued item to start at a later time, layered on top of global quiet hours. The scheduler re-checks every minute and only starts scheduled items, so auto-start being off is always respected.
+- **Quiet hours** — automatically pause all downloads during a time window and resume when it ends.
+- **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium for age-restricted, members-only, and login-gated content.
+- **Playlist expansion + per-host organization** — expand a playlist link into one item per video (capped); optionally file downloads into `<site>/<title>.<ext>`.
+- **Subtitle language picker, SponsorBlock, metadata/subtitle embedding**.
+- **Completion notifications + Dock badge** — native notification when a download finishes or fails; Dock badge shows the active count.
+- **Menu-bar mode** — run as a status-bar-only app with no Dock icon.
+- **Auto-update** — yt-dlp fetches its latest binary on launch; the app itself checks GitHub for a newer Tape Nexus release and, from Settings, downloads the new `.pkg` and opens Installer.
+- **Persistence** — queue survives restarts (stored in Application Support); resolved metadata is cached so re-copied links don't re-hit the network.
+- **Universal macOS build** — native on Apple Silicon and Intel; a Windows `.exe` ships from the same releases.
 
 > Personal-use build: ad-hoc signed, **not notarized** (no paid Developer ID). Install + clear quarantine once and you're set.
 
