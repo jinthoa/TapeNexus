@@ -25,9 +25,16 @@ def _appdata_bin_dir() -> str:
 
 
 def _bundled_dir() -> str:
-    """Resources dir next to the frozen exe or the source package."""
+    """Resources dir holding the bundled bin/ folder.
+
+    When frozen with PyInstaller, bundled --add-data files live in
+    ``sys._MEIPASS`` — the dist folder for --onedir, or a fresh temp
+    extraction dir for --onefile. They are NOT next to sys.executable
+    in the onefile case, so _MEIPASS is the correct root in both modes.
+    """
     if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "bin")
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        return os.path.join(base, "bin")
     return os.path.join(os.path.dirname(__file__), "bin")
 
 

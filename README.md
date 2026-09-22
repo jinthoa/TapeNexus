@@ -19,9 +19,9 @@ A native macOS app that watches your clipboard, queues any URL **yt-dlp supports
 4. Launch from `/Applications` (right-click → **Open** the first time).
 
 ### Windows
-1. Download **`TapeNexus-<ver>-win64.zip`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest) and unzip it anywhere.
-2. Run `TapeNexus.exe`. `yt-dlp.exe` + `ffmpeg.exe` are bundled — no separate install.
-3. SmartScreen may warn on first launch (unsigned) → **More info → Run anyway**.
+1. Download **`TapeNexus-<ver>-win64.exe`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest) — a single portable executable.
+2. Run it. `yt-dlp.exe` + `ffmpeg.exe` are bundled inside — no separate install.
+3. SmartScreen may warn on first launch (unsigned) → **More info → Run anyway**. The first launch takes a few seconds (PyInstaller extracts its payload to a temp folder before the window opens).
 
 The Windows `.exe` is built by GitHub Actions (`.github/workflows/build-windows.yml`) on `windows-latest` whenever a `v*` tag is pushed, so it's produced at zero cost with no Windows machine. See [`windows/README.md`](windows/README.md) to run from source or build it yourself.
 

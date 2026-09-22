@@ -54,11 +54,11 @@ def ensure_binaries() -> None:
 
 def build() -> None:
     ensure_binaries()
-    print(">> Running PyInstaller...")
+    print(">> Running PyInstaller (onefile)...")
     sep = ";" if os.name == "nt" else ":"
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--noconfirm", "--clean", "--windowed",
+        "--noconfirm", "--clean", "--windowed", "--onefile",
         "--name", "TapeNexus",
         "--distpath", os.path.join(ROOT, "dist"),
         "--workpath", os.path.join(ROOT, "build_tmp"),
@@ -76,17 +76,14 @@ def build() -> None:
     ]
     subprocess.check_call(cmd)
 
-    print(">> Zipping dist/TapeNexus...")
+    # --onefile produces a single dist/TapeNexus.exe; stamp it with the version.
     dist = os.path.join(ROOT, "dist")
-    src = os.path.join(dist, "TapeNexus")
-    zip_path = os.path.join(dist, f"TapeNexus-{VERSION}-win64.zip")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-        for folder, _, files in os.walk(src):
-            for fn in files:
-                full = os.path.join(folder, fn)
-                arc = os.path.relpath(full, dist)
-                z.write(full, arc)
-    print(f"OK: {zip_path}")
+    built = os.path.join(dist, "TapeNexus.exe")
+    out = os.path.join(dist, f"TapeNexus-{VERSION}-win64.exe")
+    if os.path.exists(out):
+        os.remove(out)
+    shutil.move(built, out)
+    print(f"OK: {out}")
 
 
 if __name__ == "__main__":

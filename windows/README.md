@@ -7,10 +7,13 @@ dashboard UI and full per-item control.
 
 ## Get the prebuilt exe
 
-Download `TapeNexus-<ver>-win64.zip` from the
-[latest release](https://github.com/jinthoa/TapeNexus/releases/latest),
-unzip it anywhere, and run `TapeNexus.exe`. `yt-dlp.exe`, `ffmpeg.exe`, and
-`ffprobe.exe` are bundled — no separate install needed.
+Download `TapeNexus-<ver>-win64.exe` from the
+[latest release](https://github.com/jinthoa/TapeNexus/releases/latest) and
+run it — a single portable executable. `yt-dlp.exe`, `ffmpeg.exe`, and
+`ffprobe.exe` are bundled inside — no separate install needed.
+
+The first launch takes a few seconds: PyInstaller extracts the bundled
+payload (Qt libs + binaries) to a temp folder before the window opens.
 
 Windows SmartScreen may warn on first launch (unsigned). Click **More info →
 Run anyway**. This is the Windows equivalent of the macOS quarantine clear.
@@ -35,15 +38,16 @@ pip install pyinstaller
 python build.py
 ```
 
-Produces `dist/TapeNexus/` (a folder app) and `dist/TapeNexus-<ver>-win64.zip`.
-`build.py` downloads and bundles `yt-dlp.exe` + `ffmpeg.exe` + `ffprobe.exe`.
+Produces `dist/TapeNexus-<ver>-win64.exe` — a single portable executable
+(PyInstaller `--onefile --windowed`). `build.py` downloads and bundles
+`yt-dlp.exe` + `ffmpeg.exe` + `ffprobe.exe` inside it.
 
 ## How it's built on CI
 
 The `.github/workflows/build-windows.yml` workflow builds the `.exe` on
 `windows-latest` (free for public repos) whenever a `v*` tag is pushed, and
-attaches the `.zip` to that release. So the Windows binary is produced without
-anyone needing a Windows machine locally.
+attaches the single `.exe` to that release. So the Windows binary is produced
+without anyone needing a Windows machine locally.
 
 ## Feature parity with v1.0.3 (macOS)
 
@@ -69,7 +73,7 @@ windows/
     models.py              dataclasses, presets, host pre-filter
     views/                 main_window, queue_row, settings_dialog, theme
   run.py                   PyInstaller entry shim
-  build.py                 download binaries + PyInstaller + zip
+  build.py                 download binaries + PyInstaller --onefile
   requirements.txt
 ```
 
