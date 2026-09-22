@@ -54,7 +54,7 @@ struct SettingsSheet: View {
                             }
                         }
                         row("Delay between starts") {
-                            Stepper(value: $draft.downloadDelaySeconds, in: 0...30) {
+                            Stepper(value: $draft.downloadDelaySeconds, in: 0...300) {
                                 Text(draft.downloadDelaySeconds == 0
                                      ? "Off" : "\(draft.downloadDelaySeconds)s")
                                     .font(.system(size: 12, design: .monospaced))

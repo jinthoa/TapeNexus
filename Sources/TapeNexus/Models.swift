@@ -64,6 +64,9 @@ struct DownloadItem: Identifiable, Codable, Hashable {
     /// True once we've already retried this item without browser cookies after
     /// a cookies-read failure, so we don't loop. Transient — not persisted.
     var cookiesRetried: Bool = false
+    /// True while a deferred (delay-staggered) launch is pending for this item,
+    /// so pump() doesn't re-select it and inflate the stagger timing. Transient.
+    var launchScheduled: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id, url, title, uploader, thumbnailURL, durationStr, status,

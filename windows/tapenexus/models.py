@@ -99,6 +99,9 @@ class DownloadItem:
 
     # transient (not persisted)
     pid: int = 0
+    # True while a deferred (delay-staggered) launch is pending, so pump()
+    # doesn't re-select the item and inflate the stagger timing. Transient.
+    launch_scheduled: bool = False
 
     @staticmethod
     def new(url: str, format_desc: str = "") -> "DownloadItem":
@@ -143,6 +146,7 @@ class DownloadItem:
     def to_dict(self) -> dict:
         d = asdict(self)
         d.pop("pid", None)
+        d.pop("launch_scheduled", None)
         return d
 
     @staticmethod

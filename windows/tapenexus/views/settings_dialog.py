@@ -55,7 +55,7 @@ class SettingsDialog(QDialog):
         dl_layout.addRow("Concurrent downloads", self.concurrent)
 
         self.delay = QSpinBox()
-        self.delay.setRange(0, 30)
+        self.delay.setRange(0, 300)
         self.delay.setSuffix("s")
         self.delay.setSpecialValueText("Off")
         self.delay.setValue(getattr(s, "download_delay_seconds", 0))

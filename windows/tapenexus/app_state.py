@@ -255,12 +255,35 @@ class AppState(QObject):
             if t:
                 self.add_candidate(t, start_immediately=True)
         else:
-            for u in urls:
-                self.add_candidate(u, start_immediately=True)
+            self.add_many(urls, start_immediately=True)
 
     def add_urls(self, urls: List[str], start_immediately: bool = True) -> None:
+        self.add_many(urls, start_immediately=start_immediately)
+
+    def add_many(self, urls: List[str], start_immediately: bool = True) -> None:
+        """Insert a batch as a block at the top (first URL at the very top) and
+        submit metadata probes in top-to-bottom order, so a big batch resolves
+        top-first — no scrolling to watch progress."""
+        seen = {it.url for it in self.items}
+        fresh = []
         for u in urls:
-            self.add_candidate(u, start_immediately=start_immediately)
+            if u not in seen:
+                seen.add(u)
+                fresh.append(u)
+        if not fresh:
+            return
+        fdesc = format_label(self.settings.format_preset, self.settings.custom_format)
+        # Insert in reverse so fresh[0] ends at index 0 (top of the block).
+        for u in reversed(fresh):
+            item = DownloadItem.new(u, format_desc=fdesc)
+            item.status = "resolving"
+            self.items.insert(0, item)
+        self.list_changed.emit()
+        self._persist_queue()
+        # Verify in list order (top→bottom); the meta pool is FIFO so the top
+        # row is probed first.
+        for it in self.items[:len(fresh)]:
+            self._verify(it.id, it.url, start_immediately)
 
     def _on_candidate(self, url: str) -> None:
         self.add_candidate(url, start_immediately=self.settings.auto_start_downloads)
@@ -328,9 +351,11 @@ class AppState(QObject):
         if self.item(item_id) is None:
             return
         if entries and len(entries) > 1:
+            # Replace the playlist placeholder with one row per video, inserted
+            # as a block (first entry at top) and probed top-to-bottom — same
+            # as a batch paste.
             self._remove(item_id)
-            for e in entries:
-                self.add_candidate(e, start_immediately=start)
+            self.add_many(entries, start_immediately=start)
         else:
             self._verify_single(item_id, url, start)
 
@@ -389,7 +414,8 @@ class AppState(QObject):
         if slots <= 0:
             return
         to_start = [it for it in self.items
-                    if it.status == "queued" and it.has_schedule and it.schedule_ready][:slots]
+                    if it.status == "queued" and it.has_schedule and it.schedule_ready
+                    and not it.launch_scheduled][:slots]
         self._schedule_starts(to_start)
 
     def pump(self) -> None:
@@ -399,9 +425,11 @@ class AppState(QObject):
         slots = max(0, self.settings.max_concurrent - running)
         if slots <= 0:
             return
-        # Only start queued items whose scheduled start time (if any) has come.
+        # Only start queued items whose scheduled start time (if any) has come,
+        # and that don't already have a deferred launch pending.
         to_start = [it for it in self.items
-                    if it.status == "queued" and it.schedule_ready][:slots]
+                    if it.status == "queued" and it.schedule_ready
+                    and not it.launch_scheduled][:slots]
         self._schedule_starts(to_start)
 
     def _schedule_starts(self, items: List[DownloadItem]) -> None:
@@ -422,6 +450,10 @@ class AppState(QObject):
             if delta_ms <= 0:
                 self._launch_if_queued(it.id)
             else:
+                # Mark pending so pump() skips this item while it waits —
+                # otherwise a re-pump (clipboard grab, completion) re-selects
+                # it and inflates the stagger timing.
+                self.update(it.id, launch_scheduled=True)
                 iid = it.id
                 QTimer.singleShot(delta_ms, lambda iid=iid: self._launch_if_queued(iid))
             self._last_start_at = when
@@ -430,6 +462,8 @@ class AppState(QObject):
     def _launch_if_queued(self, item_id: str) -> None:
         """Launch one item only if still queued, not in quiet hours, and a slot
         is free. Guards against stale scheduled launches."""
+        # Clear the pending flag whether or not we actually launch.
+        self.update(item_id, launch_scheduled=False)
         if self.is_quiet_hour():
             return
         it = self.item(item_id)
@@ -439,6 +473,12 @@ class AppState(QObject):
         if running >= self.settings.max_concurrent:
             return
         self._start(it)
+
+    def start_all(self) -> None:
+        """Start every queued item, respecting concurrency + the start delay.
+        Launches up to max_concurrent now (staggered); the rest stay queued
+        and are launched by pump() as slots free."""
+        self.pump()
 
     # ── download lifecycle ──────────────────────────────────────────────────
     def _start(self, item: DownloadItem, suppress_cookies: bool = False) -> None:
@@ -543,9 +583,17 @@ class AppState(QObject):
         self.pump()
 
     def start_now(self, item_id: str) -> None:
+        """Start a single queued item, respecting concurrency + the start delay.
+        If a slot is free, schedule it (staggered vs the last launch). If no
+        slot is free, leave it queued — pump() on the next completion launches
+        it — so starting many never overflows into 'Preparing download…'."""
         it = self.item(item_id)
-        if it and it.status == "queued":
-            self._start(it)
+        if not it or it.status != "queued":
+            return
+        running = sum(1 for x in self.items if x.status == "downloading")
+        if running >= self.settings.max_concurrent:
+            return
+        self._schedule_starts([it])
 
     def pause_all(self) -> None:
         for it in list(self.items):

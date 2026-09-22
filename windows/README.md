@@ -49,7 +49,7 @@ The `.github/workflows/build-windows.yml` workflow builds the `.exe` on
 attaches the single `.exe` to that release. So the Windows binary is produced
 without anyone needing a Windows machine locally.
 
-## Feature parity with v1.0.8 (macOS)
+## Feature parity with v1.0.9 (macOS)
 
 - Clipboard auto-grab + paste + drag-and-drop (URLs or a `.txt` file)
 - Queue with All / Active / Done / Failed filter, live progress, speed, ETA;

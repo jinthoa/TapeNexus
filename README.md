@@ -19,13 +19,14 @@ A quick tour of what's in the box, including the recently added features:
 - **Single-window dashboard** — dark UI, one unified list with All / Active / Done / Failed filters, live progress, speed, and ETA.
 - **Per-item controls** — pause · resume · stop · retry · reveal · remove · delete file, plus a per-row format picker and time-range **clip** editor on queued items.
 - **Retry all** — re-queues every failed or stopped item in one click; "Clear done" sweeps finished items out of the list.
+- **Start all** *(recent)* — one click launches the whole queued backlog, honoring the concurrency limit and the start delay. Items beyond the limit stay **Queued** (not "Preparing download…") and kick off as slots free — so starting many no longer overflows into a wall of stuck spinners. The per-row ▶ Start now respects the same cap and delay.
 - **Format preview** *(recent)* — "Show available formats…" runs `--list-formats` and lists every resolution / bitrate / size the link offers, so the format picker is informed instead of guessed. Picking a row applies it as a custom `-f`.
 - **Per-item scheduling** *(recent)* — schedule a queued item to start at a later time, layered on top of global quiet hours. The scheduler re-checks every minute and only starts scheduled items, so auto-start being off is always respected.
 - **Quiet hours** — automatically pause all downloads during a time window and resume when it ends.
 - **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium for age-restricted, members-only, and login-gated content. If the chosen browser's cookie store can't be read (locked DB, schema change, Keychain denied), Tape Nexus automatically retries once without cookies so public content still downloads instead of failing silently.
 - **Real failure reasons** *(recent)* — when a download fails, the actual yt-dlp error line (not just an opaque "exit code 1") is surfaced on the item and in notifications, so you can see *why* it failed.
 - **Playlist expansion + per-host organization** — expand a playlist link into one item per video (capped); optionally file downloads into `<site>/<title>.<ext>`.
-- **Source-friendly throttling** *(recent)* — metadata lookups run at most `max_concurrent` at a time (not all at once), and an optional **delay between starts** spaces out downloads, so adding a big playlist or batch doesn't get you IP-throttled by the source site.
+- **Source-friendly throttling** *(recent)* — metadata lookups run at most `max_concurrent` at a time (not all at once), and an optional **delay between starts** (up to 5 min) spaces out downloads, so adding a big playlist or batch doesn't get you IP-throttled by the source site. Bulk adds and playlist expansions resolve **top-to-bottom**, so with hundreds of items the visible top rows gather metadata first — no scrolling to watch progress.
 - **Subtitle language picker, SponsorBlock, metadata/subtitle embedding**.
 - **Completion notifications + Dock badge** — native notification when a download finishes or fails; Dock badge shows the active count.
 - **Menu-bar mode** — run as a status-bar-only app with no Dock icon.
@@ -38,10 +39,10 @@ A quick tour of what's in the box, including the recently added features:
 ## Download & install
 
 ### macOS
-1. Download **`TapeNexus-1.0.8.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.9.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. Install it:
    ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.8.pkg -target /
+   sudo installer -pkg ~/Downloads/TapeNexus-1.0.9.pkg -target /
    ```
 3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
    ```bash
@@ -67,7 +68,7 @@ The Windows `.exe` is built by GitHub Actions (`.github/workflows/build-windows.
 - **Toolbar** — Clear done (finished items), Pause all, Retry all, paste-a-URL field. Paste a whole block of URLs (or drop a `.txt` file / drag links onto the window) to queue them all at once.
 - **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium so age-restricted, members-only, and login-gated content downloads.
 - **Playlist expansion** — optionally expand a playlist link into one queue item per video (capped).
-- **Throttled metadata + download delay** — metadata (`--simulate`) probes run at most `maxConcurrent` at a time, so expanding a large playlist or batch-pasting URLs doesn't fire dozens of requests at the source site at once (which gets you rate-limited / 429'd). An optional **delay between starts** (0–30s, default off) further spaces out downloads.
+- **Throttled metadata + download delay** — metadata (`--simulate`) probes run at most `maxConcurrent` at a time, so expanding a large playlist or batch-pasting URLs doesn't fire dozens of requests at the source site at once (which gets you rate-limited / 429'd). Bulk adds and playlist expansions resolve **top-to-bottom** (visible top rows first), so hundreds of items don't force you to scroll to watch progress. An optional **delay between starts** (0–300s, default off) further spaces out downloads; **Start all** and the per-row ▶ Start now both honor the concurrency cap and this delay.
 - **Resilient cookies + real error messages** — if `--cookies-from-browser` fails at extraction time (the browser's cookie store is locked or unreadable on that machine), Tape Nexus falls back to a single cookieless retry so public content still downloads. And when a download fails, the actual yt-dlp `ERROR:` line is shown on the item instead of a generic exit-code message.
 - **Per-host organization** — optionally file downloads into `<site>/<title>.<ext>` (e.g. `YouTube/…`) instead of a flat folder.
 - **Subtitle language picker** — choose which subtitle languages to embed.

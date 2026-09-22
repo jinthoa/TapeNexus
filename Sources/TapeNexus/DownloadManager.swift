@@ -31,8 +31,15 @@ final class DownloadManager {
         let slots = max(0, limit - running)
         guard slots > 0 else { return }
         // Only start queued items whose scheduled start time (if any) has come.
-        let toStart = Array(state.items.filter { $0.status == .queued && $0.scheduleReady }.prefix(slots))
+        let toStart = Array(state.items.filter { $0.status == .queued && $0.scheduleReady && !$0.launchScheduled }.prefix(slots))
         scheduleStarts(toStart)
+    }
+
+    /// Start every queued item, respecting concurrency + the start delay.
+    /// Launches up to `maxConcurrent` now (staggered); the rest stay queued
+    /// and are launched by `pump()` as slots free.
+    func startAll() {
+        pump()
     }
 
     func start(_ item: DownloadItem, suppressCookies: Bool = false) {
@@ -161,7 +168,7 @@ final class DownloadManager {
         let running = state.items.filter { $0.status == .downloading }.count
         let slots = max(0, settings().maxConcurrent - running)
         guard slots > 0 else { return }
-        let toStart = Array(state.items.filter { $0.status == .queued && $0.hasSchedule && $0.scheduleReady }.prefix(slots))
+        let toStart = Array(state.items.filter { $0.status == .queued && $0.hasSchedule && $0.scheduleReady && !$0.launchScheduled }.prefix(slots))
         scheduleStarts(toStart)
     }
 
@@ -186,6 +193,10 @@ final class DownloadManager {
             if delta <= 0 {
                 launchIfStillQueued(id)
             } else {
+                // Mark pending so pump() skips this item while it waits —
+                // otherwise a re-pump (clipboard grab, completion) re-selects
+                // it and inflates the stagger timing.
+                state?.update(id) { $0.launchScheduled = true }
                 bgQueue.asyncAfter(deadline: .now() + delta) { [weak self] in
                     guard let self = self else { return }
                     DispatchQueue.main.async { self.launchIfStillQueued(id) }
@@ -202,6 +213,8 @@ final class DownloadManager {
     /// launch filled the slot while we waited).
     private func launchIfStillQueued(_ id: UUID) {
         guard let state = state else { return }
+        // Clear the pending flag whether or not we actually launch.
+        state.update(id) { $0.launchScheduled = false }
         guard !state.isQuietHour,
               let it = state.item(id), it.status == .queued,
               state.items.filter({ $0.status == .downloading }).count < settings().maxConcurrent
@@ -209,10 +222,15 @@ final class DownloadManager {
         start(it)
     }
 
-    /// Start a single queued item without starting the rest of the queue.
+    /// Start a single queued item, respecting concurrency + the start delay.
+    /// If a slot is free, schedule it (staggered vs the last launch). If no
+    /// slot is free, leave it queued — pump() on the next completion launches
+    /// it — so starting many never overflows into "Preparing download…".
     func startNow(_ id: UUID) {
         guard let state = state, let item = state.item(id), item.status == .queued else { return }
-        start(item)
+        let running = state.items.filter { $0.status == .downloading }.count
+        guard running < settings().maxConcurrent else { return }
+        scheduleStarts([item])
     }
 
     func pauseAll() {

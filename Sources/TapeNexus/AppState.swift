@@ -155,13 +155,35 @@ final class AppState: ObservableObject {
             let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { addCandidate(t, startImmediately: true) }
         } else {
-            for u in urls { addCandidate(u, startImmediately: true) }
+            addURLs(urls, startImmediately: true)
         }
     }
 
-    /// Entry point for drag-and-drop of URLs or a .txt file full of URLs.
+    /// Entry point for drag-and-drop, .txt drop, or batch paste of many URLs.
+    /// Inserts the whole batch as a block at the top (first URL at the very
+    /// top) and submits metadata probes in top-to-bottom order, so with a big
+    /// batch the visible top rows resolve first — no scrolling to watch progress.
     func addURLs(_ urls: [String], startImmediately: Bool = true) {
-        for u in urls { addCandidate(u, startImmediately: startImmediately) }
+        // De-duplicate against existing items AND within this batch.
+        var seen = Set(items.map { $0.url })
+        var fresh: [String] = []
+        for u in urls where !seen.contains(u) {
+            seen.insert(u); fresh.append(u)
+        }
+        guard !fresh.isEmpty else { return }
+        // Insert in reverse so fresh[0] ends at index 0 (top of the block).
+        for u in fresh.reversed() {
+            let placeholder = DownloadItem(id: UUID(), url: u, status: .resolving,
+                                           formatDesc: settings.formatLabel())
+            items.insert(placeholder, at: 0)
+        }
+        persist()
+        // Verify in list order (top→bottom); metaQueue is FIFO so the top row
+        // is probed first. Collect ids+urls from the freshly inserted block.
+        let block = items.prefix(fresh.count).map { ($0.id, $0.url) }
+        for (id, url) in block {
+            verify(id: id, url: url, startImmediately: startImmediately)
+        }
     }
 
     func addCandidate(_ url: String, startImmediately: Bool? = nil) {
@@ -231,9 +253,11 @@ final class AppState: ObservableObject {
                 guard let self = self else { return }
                 guard self.item(id) != nil else { return } // removed meanwhile
                 if let entries = entries, entries.count > 1 {
-                    // Replace the playlist placeholder with one row per video.
+                    // Replace the playlist placeholder with one row per video,
+                    // inserted as a block (first entry at top) and probed
+                    // top-to-bottom — same as a batch paste.
                     self.removeItem(id)
-                    for e in entries { self.addCandidate(e, startImmediately: startImmediately) }
+                    self.addURLs(entries, startImmediately: startImmediately)
                 } else {
                     // Not actually a multi-entry playlist → verify as a single video.
                     self.verifySingle(id: id, url: url, startImmediately: startImmediately)
@@ -269,6 +293,7 @@ final class AppState: ObservableObject {
     func retry(_ id: UUID) { downloads.retry(id) }
     func retryAll() { downloads.retryAll() }
     func startNow(_ id: UUID) { downloads.startNow(id) }
+    func startAll() { downloads.startAll() }
     func pauseAll() { downloads.pauseAll() }
     func resumeAll() { downloads.resumeAll() }
     func clearFinished() { downloads.clearFinished() }

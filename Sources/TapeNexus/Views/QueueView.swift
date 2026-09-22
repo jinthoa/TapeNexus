@@ -106,6 +106,12 @@ struct QueueView: View {
                 }.chipStyle()
             }
 
+            Button(action: { state.startAll() }) {
+                Label("Start all", systemImage: "play.fill").font(.system(size: 12))
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(state.items.allSatisfy { $0.status != .queued })
+
             Button(action: { state.retryAll() }) {
                 Label("Retry all", systemImage: "arrow.clockwise").font(.system(size: 12))
             }
