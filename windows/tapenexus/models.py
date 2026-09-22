@@ -173,6 +173,7 @@ class AppSettings:
     quiet_hours_enabled: bool = False
     quiet_start: int = 23
     quiet_end: int = 7
+    download_delay_seconds: int = 0  # seconds between starting each download (0 = off)
 
     @staticmethod
     def default() -> "AppSettings":

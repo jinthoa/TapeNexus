@@ -15,6 +15,11 @@ final class DownloadManager {
 
     private func settings() -> AppSettings { state?.store.settings ?? .default }
 
+    /// Timestamp of the most recently scheduled launch, used to stagger starts
+    /// by `downloadDelaySeconds` so a big queue / rapid completions don't hit
+    /// the source site in a burst.
+    private var lastStartAt: Date?
+
     /// Called whenever queue changes; starts queued items up to the limit.
     func pump() {
         guard let state = state else { return }
@@ -26,10 +31,8 @@ final class DownloadManager {
         let slots = max(0, limit - running)
         guard slots > 0 else { return }
         // Only start queued items whose scheduled start time (if any) has come.
-        let toStart = state.items.filter { $0.status == .queued && $0.scheduleReady }.prefix(slots)
-        for item in toStart {
-            start(item)
-        }
+        let toStart = Array(state.items.filter { $0.status == .queued && $0.scheduleReady }.prefix(slots))
+        scheduleStarts(toStart)
     }
 
     func start(_ item: DownloadItem) {
@@ -142,10 +145,52 @@ final class DownloadManager {
         let running = state.items.filter { $0.status == .downloading }.count
         let slots = max(0, settings().maxConcurrent - running)
         guard slots > 0 else { return }
-        let toStart = state.items.filter { $0.status == .queued && $0.hasSchedule && $0.scheduleReady }.prefix(slots)
-        for item in toStart {
-            start(item)
+        let toStart = Array(state.items.filter { $0.status == .queued && $0.hasSchedule && $0.scheduleReady }.prefix(slots))
+        scheduleStarts(toStart)
+    }
+
+    /// Stagger launches by `downloadDelaySeconds` so a big queue or a run of
+    /// rapid completions doesn't reach the source site in a burst. The first
+    /// available launch goes immediately; later ones wait so successive starts
+    /// are at least `delay` apart. Each launch re-checks status / quiet hours /
+    /// free slots at fire time, so a stop or quiet window during the wait is
+    /// honored rather than overridden.
+    private func scheduleStarts(_ items: [DownloadItem]) {
+        guard !items.isEmpty else { return }
+        let delay = settings().downloadDelaySeconds
+        let now = Date()
+        var fireAt: Date = now
+        if delay > 0, let last = lastStartAt {
+            fireAt = max(now, last.addingTimeInterval(TimeInterval(delay)))
         }
+        for item in items {
+            let id = item.id
+            let when = fireAt
+            let delta = when.timeIntervalSince(now)
+            if delta <= 0 {
+                launchIfStillQueued(id)
+            } else {
+                bgQueue.asyncAfter(deadline: .now() + delta) { [weak self] in
+                    guard let self = self else { return }
+                    DispatchQueue.main.async { self.launchIfStillQueued(id) }
+                }
+            }
+            lastStartAt = when
+            fireAt = fireAt.addingTimeInterval(TimeInterval(delay))
+        }
+    }
+
+    /// Launch one item only if it's still queued, we're not in quiet hours, and
+    /// a concurrency slot is actually free. Guards against a stale scheduled
+    /// launch (the item was stopped/removed, quiet hours began, or another
+    /// launch filled the slot while we waited).
+    private func launchIfStillQueued(_ id: UUID) {
+        guard let state = state else { return }
+        guard !state.isQuietHour,
+              let it = state.item(id), it.status == .queued,
+              state.items.filter({ $0.status == .downloading }).count < settings().maxConcurrent
+        else { return }
+        start(it)
     }
 
     /// Start a single queued item without starting the rest of the queue.

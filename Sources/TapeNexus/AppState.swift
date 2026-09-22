@@ -32,6 +32,18 @@ final class AppState: ObservableObject {
     private var quietActive: Bool = false
     private var quietPausedIDs: Set<UUID> = []
 
+    /// Throttled queue for `--simulate` metadata probes. Bounded by
+    /// `maxConcurrent` so adding a playlist (or batch-pasting URLs) doesn't fire
+    /// N metadata requests at the source site in the same instant and get
+    /// IP-throttled / 429'd. Items wait in `.resolving` for a slot.
+    private let metaQueue: OperationQueue = {
+        let q = OperationQueue()
+        q.maxConcurrentOperationCount = 2
+        q.qualityOfService = .userInitiated
+        q.name = "tapenexus.meta"
+        return q
+    }()
+
     init() {
         let store = SettingsStore()
         self.store = store
@@ -53,6 +65,7 @@ final class AppState: ObservableObject {
         // wire manager + updater
         dm.state = self
         yt.ensureBinary()
+        metaQueue.maxConcurrentOperationCount = max(1, settings.maxConcurrent)
         updater.onStatus = { [weak self] s in self?.updateStatus = s }
         appUpdater.onStatus = { [weak self] s in self?.appUpdateStatus = s }
         // Touch the notifier singleton so it requests notification authorization
@@ -181,7 +194,7 @@ final class AppState: ObservableObject {
             return
         }
         let ytRef = yt
-        DispatchQueue.global().async { [weak self] in
+        metaQueue.addOperation { [weak self] in
             let result = ytRef.simulate(url)
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -273,6 +286,7 @@ final class AppState: ObservableObject {
         settings = s
         store.settings = s
         store.ensureDestinationExists()
+        metaQueue.maxConcurrentOperationCount = max(1, s.maxConcurrent)
         clipboard.enabled = s.autoGrabClipboard
         clipboard.pollInterval = s.pollIntervalSeconds
         clipboard.start() // restart with new cadence

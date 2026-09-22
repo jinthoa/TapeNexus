@@ -53,6 +53,17 @@ struct SettingsSheet: View {
                                 Text("\(draft.maxConcurrent)").font(.system(size: 12, design: .monospaced))
                             }
                         }
+                        row("Delay between starts") {
+                            Stepper(value: $draft.downloadDelaySeconds, in: 0...30) {
+                                Text(draft.downloadDelaySeconds == 0
+                                     ? "Off" : "\(draft.downloadDelaySeconds)s")
+                                    .font(.system(size: 12, design: .monospaced))
+                            }
+                        }
+                        if draft.downloadDelaySeconds > 0 {
+                            Text("Waits this many seconds between starting each download, so a large queue or rapid completions don't hit the source site in a burst.")
+                                .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        }
                         toggle("Remove sponsor segments (SponsorBlock)", isOn: $draft.sponsorBlock)
                         toggle("Embed metadata", isOn: $draft.embedMetadata)
                         toggle("Embed subtitles", isOn: $draft.embedSubs)

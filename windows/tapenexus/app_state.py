@@ -9,7 +9,8 @@ import json
 import os
 import subprocess
 import threading
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import psutil
@@ -143,8 +144,19 @@ class AppState(QObject):
         self._quiet_timer.timeout.connect(self._quiet_tick)
         self._quiet_active = False
         self._quiet_paused_ids: set = set()
+        # Throttled pool for --simulate metadata probes, bounded by
+        # max_concurrent so a playlist / batch-paste doesn't fire N probes at
+        # the source site in the same instant and get IP-throttled. Sized
+        # from settings after _load() below.
+        self._meta_pool: ThreadPoolExecutor = None  # type: ignore[assignment]
+        # Timestamp of the most recently scheduled launch, for staggering
+        # starts by download_delay_seconds.
+        self._last_start_at = None
 
         self._load()
+        self._meta_pool = ThreadPoolExecutor(
+            max_workers=max(1, self.settings.max_concurrent),
+            thread_name_prefix="tn-meta")
 
         # wire clipboard
         self.clipboard.enabled = self.settings.auto_grab_clipboard
@@ -276,7 +288,9 @@ class AppState(QObject):
         def work():
             result = self.yt.simulate(url)
             QTimer.singleShot(0, lambda: self._on_simulate_done(item_id, url, result, start))
-        threading.Thread(target=work, daemon=True).start()
+        # Bounded pool: no more than max_concurrent metadata probes in flight,
+        # so a playlist / batch-paste can't burst the source site.
+        self._meta_pool.submit(work)
 
     def _verify_playlist(self, item_id: str, url: str, start: bool) -> None:
         cap = self.settings.playlist_cap
@@ -369,8 +383,7 @@ class AppState(QObject):
             return
         to_start = [it for it in self.items
                     if it.status == "queued" and it.has_schedule and it.schedule_ready][:slots]
-        for it in to_start:
-            self._start(it)
+        self._schedule_starts(to_start)
 
     def pump(self) -> None:
         if self.is_quiet_hour():
@@ -382,8 +395,43 @@ class AppState(QObject):
         # Only start queued items whose scheduled start time (if any) has come.
         to_start = [it for it in self.items
                     if it.status == "queued" and it.schedule_ready][:slots]
-        for it in to_start:
-            self._start(it)
+        self._schedule_starts(to_start)
+
+    def _schedule_starts(self, items: List[DownloadItem]) -> None:
+        """Stagger launches by download_delay_seconds so a big queue or rapid
+        completions don't hit the source site in a burst. First launch goes
+        immediately; later ones wait so successive starts are at least `delay`
+        apart. Each launch re-checks status/quiet/slots at fire time."""
+        if not items:
+            return
+        delay = self.settings.download_delay_seconds
+        now = datetime.now()
+        fire_at = now
+        if delay > 0 and self._last_start_at is not None:
+            fire_at = max(now, self._last_start_at + timedelta(seconds=delay))
+        for it in items:
+            when = fire_at
+            delta_ms = int((when - now).total_seconds() * 1000) if delay > 0 else 0
+            if delta_ms <= 0:
+                self._launch_if_queued(it.id)
+            else:
+                iid = it.id
+                QTimer.singleShot(delta_ms, lambda iid=iid: self._launch_if_queued(iid))
+            self._last_start_at = when
+            fire_at = fire_at + timedelta(seconds=delay)
+
+    def _launch_if_queued(self, item_id: str) -> None:
+        """Launch one item only if still queued, not in quiet hours, and a slot
+        is free. Guards against stale scheduled launches."""
+        if self.is_quiet_hour():
+            return
+        it = self.item(item_id)
+        if not it or it.status != "queued":
+            return
+        running = sum(1 for x in self.items if x.status == "downloading")
+        if running >= self.settings.max_concurrent:
+            return
+        self._start(it)
 
     # ── download lifecycle ──────────────────────────────────────────────────
     def _start(self, item: DownloadItem) -> None:
@@ -613,6 +661,14 @@ class AppState(QObject):
         self.settings = s
         self._persist_settings()
         os.makedirs(s.destination_folder, exist_ok=True)
+        # Resize the metadata-probe pool to the new concurrency limit. In-flight
+        # + queued probes on the old pool finish naturally (cancel_futures=False);
+        # new probes use the new pool.
+        old = self._meta_pool
+        self._meta_pool = ThreadPoolExecutor(
+            max_workers=max(1, s.max_concurrent), thread_name_prefix="tn-meta")
+        if old is not None:
+            old.shutdown(wait=False, cancel_futures=False)
         self.clipboard.enabled = s.auto_grab_clipboard
         self.clipboard.set_interval(getattr(s, "poll_interval_seconds", 1.2))
         self.clipboard.start()

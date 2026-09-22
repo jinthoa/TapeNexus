@@ -199,6 +199,7 @@ struct AppSettings: Codable, Equatable {
     var quietHoursEnabled: Bool = false      // auto-pause all downloads during a time window
     var quietStart: Int = 23                 // quiet window start hour (0–23)
     var quietEnd: Int = 7                    // quiet window end hour (0–23)
+    var downloadDelaySeconds: Int = 0        // seconds to wait between starting each download (0 = off); avoids bursting the source site
 
     static let formatPresets: [(key: String, label: String, arg: String)] = [
         ("best",   "Best (mp4)",        "bestvideo*+bestaudio/best"),
@@ -229,7 +230,8 @@ struct AppSettings: Codable, Equatable {
              embedMetadata, embedSubs, pollIntervalSeconds,
              cookiesBrowser, subtitleLangs, organizeByHost, expandPlaylists,
              playlistCap, notifyOnComplete, menuBarMode,
-             quietHoursEnabled, quietStart, quietEnd
+             quietHoursEnabled, quietStart, quietEnd,
+             downloadDelaySeconds
     }
 
     init(destinationFolder: String, formatPreset: String, customFormat: String,
@@ -240,7 +242,8 @@ struct AppSettings: Codable, Equatable {
          organizeByHost: Bool = false, expandPlaylists: Bool = false,
          playlistCap: Int = 50, notifyOnComplete: Bool = true,
          menuBarMode: Bool = false, quietHoursEnabled: Bool = false,
-         quietStart: Int = 23, quietEnd: Int = 7) {
+         quietStart: Int = 23, quietEnd: Int = 7,
+         downloadDelaySeconds: Int = 0) {
         self.destinationFolder = destinationFolder
         self.formatPreset = formatPreset; self.customFormat = customFormat
         self.maxConcurrent = maxConcurrent
@@ -254,6 +257,7 @@ struct AppSettings: Codable, Equatable {
         self.playlistCap = playlistCap; self.notifyOnComplete = notifyOnComplete
         self.menuBarMode = menuBarMode; self.quietHoursEnabled = quietHoursEnabled
         self.quietStart = quietStart; self.quietEnd = quietEnd
+        self.downloadDelaySeconds = downloadDelaySeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -279,6 +283,7 @@ struct AppSettings: Codable, Equatable {
         quietHoursEnabled = try c.decodeIfPresent(Bool.self, forKey: .quietHoursEnabled) ?? false
         quietStart = try c.decodeIfPresent(Int.self, forKey: .quietStart) ?? 23
         quietEnd = try c.decodeIfPresent(Int.self, forKey: .quietEnd) ?? 7
+        downloadDelaySeconds = try c.decodeIfPresent(Int.self, forKey: .downloadDelaySeconds) ?? 0
     }
 
     static var `default`: AppSettings {
