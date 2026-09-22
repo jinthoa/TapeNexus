@@ -1,0 +1,15 @@
+# Build output
+build/
+
+# Bundled binaries — fetched on demand by build.sh
+# (yt-dlp macOS standalone + arm64 ffmpeg/ffprobe from martin-riedl.de)
+Sources/TapeNexus/Resources/bin/
+
+# Local-only scratch / tooling state
+.mockups/
+.superpowers/
+.claude/
+
+# macOS / editor noise
+.DS_Store
+*.swp
