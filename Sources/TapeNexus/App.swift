@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let state = AppState()
         self.state = state
+        state.menuBar.delegate = self
 
         let contentView = ContentView().environmentObject(state)
         let hosting = NSHostingController(rootView: contentView)
@@ -34,12 +35,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // In menu-bar mode the app lives in the status bar; closing the window
+        // should hide, not quit.
+        state?.settings.menuBarMode == false
     }
 
     /// Opens the Settings sheet (Tape Nexus ▸ Settings… ⌘,).
     @objc func showSettings(_ sender: Any?) {
         state?.showSettings = true
+    }
+
+    /// Re-shows the main window from the menu-bar status item.
+    @objc func showWindow() {
+        guard let w = window else { return }
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func setupMainMenu() {

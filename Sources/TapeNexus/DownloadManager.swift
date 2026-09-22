@@ -18,6 +18,9 @@ final class DownloadManager {
     /// Called whenever queue changes; starts queued items up to the limit.
     func pump() {
         guard let state = state else { return }
+        // Don't launch new downloads during quiet hours (running ones are
+        // paused by AppState's quiet-hours timer).
+        if state.isQuietHour { return }
         let running = state.items.filter { $0.status == .downloading }.count
         let limit = settings().maxConcurrent
         let slots = max(0, limit - running)
@@ -61,6 +64,15 @@ final class DownloadManager {
                     $0.pid = 0
                 }
                 if ok { state.persist() }
+                // Notify + dock badge (only for genuinely terminal outcomes).
+                let finished = state.item(id)
+                if let it = finished, (it.status == .done || it.status == .failed),
+                   state.settings.notifyOnComplete {
+                    Notifier.shared.post(
+                        title: ok ? "Download complete" : "Download failed",
+                        body: it.displayTitle)
+                }
+                state.refreshBadge()
                 self.pump()
             })
         if pid > 0 {

@@ -81,10 +81,12 @@ done < <(find "$SRC" -name '*.swift' -print0)
 echo "▶ Compiling (arm64)…"
 swiftc -O -swift-version 5 -target arm64-apple-macos14 -sdk "$SDK" \
   -framework SwiftUI -framework AppKit -framework Foundation -framework Combine \
+  -framework UserNotifications \
   "${SWIFT_FILES[@]}" -o "$BUILD/TapeNexus.arm64"
 echo "▶ Compiling (x86_64)…"
 swiftc -O -swift-version 5 -target x86_64-apple-macos14 -sdk "$SDK" \
   -framework SwiftUI -framework AppKit -framework Foundation -framework Combine \
+  -framework UserNotifications \
   "${SWIFT_FILES[@]}" -o "$BUILD/TapeNexus.x86_64"
 echo "▶ Linking universal binary…"
 lipo -create "$BUILD/TapeNexus.arm64" "$BUILD/TapeNexus.x86_64" -output "$APP/Contents/MacOS/TapeNexus"

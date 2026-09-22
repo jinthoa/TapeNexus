@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The whole single-page UI: brand strip + paste field, a segmented
 /// All/Active/Done/Failed filter with live counts, a toolbar of status chips,
@@ -13,6 +14,8 @@ struct QueueView: View {
             Divider().overlay(Theme.line)
             list
         }
+        .onDrop(of: [UTType.text, UTType.url, UTType.fileURL],
+                delegate: URLDropDelegate(state: state))
     }
 
     // MARK: Header — brand, paste field, settings gear
@@ -155,6 +158,9 @@ struct QueueView: View {
 struct QueueRow: View {
     @EnvironmentObject var state: AppState
     let item: DownloadItem
+    @State private var clipStart: String = ""
+    @State private var clipEnd: String = ""
+    @State private var showClip: Bool = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -175,6 +181,9 @@ struct QueueRow: View {
                 HStack(spacing: 8) {
                     StatusBadge(status: item.status)
                     if !item.formatDesc.isEmpty { Chip(text: item.formatDesc) }
+                    if item.hasClip {
+                        Chip(text: "clip \(clipRangeLabel)")
+                    }
                     if item.status == .downloading && item.totalBytes == 0 {
                         // yt-dlp re-extracts metadata before the first byte transfers;
                         // show an active spinner here instead of a dead 0% bar.
@@ -213,11 +222,78 @@ struct QueueRow: View {
         .background(Theme.panel)
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .onAppear { clipStart = item.clipStart; clipEnd = item.clipEnd }
     }
 
     private var percentLabel: String {
         if item.status == .paused { return "paused · \(Int(item.progress*100))%" }
         return "\(Int(item.progress*100))%"
+    }
+
+    private var clipRangeLabel: String {
+        let s = item.clipStart.isEmpty ? "0" : item.clipStart
+        let e = item.clipEnd.isEmpty ? "end" : item.clipEnd
+        return "\(s)→\(e)"
+    }
+
+    /// Per-row format picker (queued items only). "Default" clears the override
+    /// so the item follows the global setting.
+    private var formatMenu: some View {
+        Menu {
+            Button("Default (\(state.settings.formatLabel()))") {
+                state.setItemFormat(item.id, preset: "", custom: "")
+            }
+            Divider()
+            ForEach(AppSettings.formatPresets, id: \.key) { p in
+                Button(p.label) { state.setItemFormat(item.id, preset: p.key, custom: "") }
+            }
+        } label: {
+            Label(item.formatPreset.isEmpty ? "Format" : "Format ✓",
+                  systemImage: "slider.horizontal.3")
+                .font(.system(size: 11)).labelStyle(.titleAndIcon)
+        }.menuStyle(.borderlessButton).fixedSize()
+    }
+
+    /// Time-range clip editor presented as a popover.
+    private var clipButton: some View {
+        Button(action: { showClip = true }) {
+            Label("Clip", systemImage: "scissors")
+                .font(.system(size: 11)).labelStyle(.titleAndIcon)
+        }.buttonStyle(.borderless).popover(isPresented: $showClip, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Download a clip").font(.system(size: 12, weight: .semibold))
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Start").font(.system(size: 10)).foregroundStyle(Theme.muted)
+                        TextField("0:00", text: $clipStart).textFieldStyle(.roundedBorder)
+                            .frame(width: 90).onSubmit { commitClip() }
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("End").font(.system(size: 10)).foregroundStyle(Theme.muted)
+                        TextField("e.g. 1:30", text: $clipEnd).textFieldStyle(.roundedBorder)
+                            .frame(width: 90).onSubmit { commitClip() }
+                    }
+                }
+                Text("Timestamps like 1:23 or 83 (seconds). Leave end blank to grab to the end.")
+                    .font(.system(size: 10)).foregroundStyle(Theme.muted).frame(width: 230)
+                HStack {
+                    if item.hasClip {
+                        Button("Clear") {
+                            clipStart = ""; clipEnd = ""; commitClip()
+                        }.buttonStyle(.bordered).controlSize(.small)
+                    }
+                    Spacer()
+                    Button("Done") { commitClip(); showClip = false }
+                        .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent)
+                }
+            }.padding(14).frame(width: 260)
+        }
+    }
+
+    private func commitClip() {
+        state.setItemClip(item.id,
+                          start: clipStart.trimmingCharacters(in: .whitespaces),
+                          end: clipEnd.trimmingCharacters(in: .whitespaces))
     }
 
     @ViewBuilder private var controls: some View {
@@ -235,6 +311,8 @@ struct QueueRow: View {
                     IconButton(system: "stop.fill", help: "Stop", tint: Theme.err) { state.stop(item.id) }
                     IconButton(system: "arrow.clockwise", help: "Retry") { state.retry(item.id) }
                 case .queued:
+                    formatMenu
+                    clipButton
                     IconButton(system: "play.fill", help: "Start now", tint: Theme.ok) { state.startNow(item.id) }
                     IconButton(system: "xmark", help: "Remove", tint: Theme.err) { state.remove(item.id) }
                 case .failed, .stopped:
@@ -276,5 +354,43 @@ private extension View {
             .background(Theme.panel)
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.line))
             .clipShape(RoundedRectangle(cornerRadius: 7))
+    }
+}
+
+/// Accepts dragged URLs (or a .txt file of URLs) anywhere on the window and
+/// queues each one. Text drops are scanned for http(s) links the same way the
+/// clipboard/paste field is.
+struct URLDropDelegate: DropDelegate {
+    let state: AppState
+    func performDrop(info: DropInfo) -> Bool {
+        var collected: [String] = []
+        let group = DispatchGroup()
+        let providers = info.itemProviders(for: [UTType.text, UTType.url, UTType.fileURL])
+        for p in providers {
+            if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                group.enter()
+                p.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    if let url = item as? URL {
+                        if url.pathExtension.lowercased() == "txt",
+                           let s = try? String(contentsOf: url, encoding: .utf8) {
+                            collected += SupportedURLs.extractURLs(from: s)
+                        } else {
+                            collected += SupportedURLs.extractURLs(from: url.absoluteString)
+                        }
+                    }
+                    group.leave()
+                }
+            } else if p.canLoadObject(ofClass: NSString.self) {
+                group.enter()
+                _ = p.loadObject(ofClass: NSString.self) { s, _ in
+                    if let s = s as? String { collected += SupportedURLs.extractURLs(from: s) }
+                    group.leave()
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            if !collected.isEmpty { state.addURLs(collected) }
+        }
+        return true
     }
 }

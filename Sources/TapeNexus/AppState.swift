@@ -21,6 +21,12 @@ final class AppState: ObservableObject {
     let clipboard = ClipboardMonitor()
     let updater: Updater
     let appUpdater = AppUpdater()
+    let menuBar = MenuBarController()
+
+    // Quiet-hours scheduler state.
+    private var quietTimer: DispatchSourceTimer?
+    private var quietActive: Bool = false
+    private var quietPausedIDs: Set<UUID> = []
 
     init() {
         let store = SettingsStore()
@@ -46,6 +52,9 @@ final class AppState: ObservableObject {
         yt.ensureBinary()
         updater.onStatus = { [weak self] s in self?.updateStatus = s }
         appUpdater.onStatus = { [weak self] s in self?.appUpdateStatus = s }
+        // Touch the notifier singleton so it requests notification authorization
+        // up front (the first real post happens on download completion).
+        _ = Notifier.shared
 
         // App self-update: a notify-only check a few seconds after launch so the
         // user learns a newer Tape Nexus is on GitHub without anything auto-
@@ -53,6 +62,11 @@ final class AppState: ObservableObject {
         DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [weak self] in
             DispatchQueue.main.async { self?.appUpdater.check(auto: true) }
         }
+
+        // Menu-bar mode + quiet-hours scheduler.
+        menuBar.state = self
+        applyMenuBarMode()
+        startQuietTimer()
 
         // clipboard wiring
         clipboard.enabled = settings.autoGrabClipboard
@@ -123,10 +137,23 @@ final class AppState: ObservableObject {
     // MARK: - Adding URLs
 
     func addManualURL() {
-        let raw = pasteField.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return }
-        addCandidate(raw, startImmediately: true)
+        let raw = pasteField
         pasteField = ""
+        // Batch paste: pull every http(s) URL out of the field (one per line or
+        // a whole blob of text) and queue each. Falls back to a single trimmed
+        // entry so a non-URL paste still tries once.
+        let urls = SupportedURLs.extractURLs(from: raw)
+        if urls.isEmpty {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { addCandidate(t, startImmediately: true) }
+        } else {
+            for u in urls { addCandidate(u, startImmediately: true) }
+        }
+    }
+
+    /// Entry point for drag-and-drop of URLs or a .txt file full of URLs.
+    func addURLs(_ urls: [String], startImmediately: Bool = true) {
+        for u in urls { addCandidate(u, startImmediately: startImmediately) }
     }
 
     func addCandidate(_ url: String, startImmediately: Bool? = nil) {
@@ -142,6 +169,16 @@ final class AppState: ObservableObject {
     }
 
     private func verify(id: UUID, url: String, startImmediately: Bool) {
+        // Playlist expansion: if the link looks like a playlist and the user
+        // opted in, flat-list its entries and queue each as its own item.
+        if settings.expandPlaylists && Self.looksLikePlaylist(url) {
+            verifyPlaylist(id: id, url: url, startImmediately: startImmediately)
+            return
+        }
+        verifySingle(id: id, url: url, startImmediately: startImmediately)
+    }
+
+    private func verifySingle(id: UUID, url: String, startImmediately: Bool) {
         // Cache hit: a URL we've already resolved this session (or a previous
         // one) is reused without another `--simulate` network call.
         if let cached = store.metaCache[url] {
@@ -175,6 +212,31 @@ final class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    private func verifyPlaylist(id: UUID, url: String, startImmediately: Bool) {
+        let ytRef = yt
+        let cap = settings.playlistCap
+        DispatchQueue.global().async { [weak self] in
+            let entries = ytRef.simulatePlaylist(url, cap: cap)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard self.item(id) != nil else { return } // removed meanwhile
+                if let entries = entries, entries.count > 1 {
+                    // Replace the playlist placeholder with one row per video.
+                    self.removeItem(id)
+                    for e in entries { self.addCandidate(e, startImmediately: startImmediately) }
+                } else {
+                    // Not actually a multi-entry playlist → verify as a single video.
+                    self.verifySingle(id: id, url: url, startImmediately: startImmediately)
+                }
+            }
+        }
+    }
+
+    static func looksLikePlaylist(_ url: String) -> Bool {
+        let l = url.lowercased()
+        return l.contains("list=") || l.contains("/playlist") || l.contains("playlist?")
     }
 
     private func applyMeta(id: UUID, url: String, meta: VideoMeta, startImmediately: Bool) {
@@ -218,6 +280,8 @@ final class AppState: ObservableObject {
         clipboard.enabled = s.autoGrabClipboard
         clipboard.pollInterval = s.pollIntervalSeconds
         clipboard.start() // restart with new cadence
+        applyMenuBarMode()
+        evaluateQuietHours()
         if s.formatLabel() != "" {
             // reflect format label on queued items
             for i in items.indices where items[i].status == .queued {
@@ -235,6 +299,79 @@ final class AppState: ObservableObject {
 
     /// The app's own version (CFBundleShortVersionString), for the Settings view.
     var appVersion: String { appUpdater.currentVersion }
+
+    // MARK: - Per-item overrides (v1.0.2)
+
+    func setItemFormat(_ id: UUID, preset: String, custom: String) {
+        update(id) {
+            $0.formatPreset = preset
+            $0.customFormat = custom
+            $0.formatDesc = preset.isEmpty
+                ? settings.formatLabel()
+                : AppSettings.formatLabel(preset: preset, custom: custom)
+        }
+        persist()
+    }
+
+    func setItemClip(_ id: UUID, start: String, end: String) {
+        update(id) { $0.clipStart = start; $0.clipEnd = end }
+        persist()
+    }
+
+    // MARK: - Dock badge + notifications
+
+    /// Reflect the active download count on the Dock icon (no-op in menu-bar
+    /// mode where the Dock icon is hidden).
+    func refreshBadge() {
+        let n = items.filter { $0.status == .downloading }.count
+        NSApp.dockTile.badgeLabel = n > 0 ? "\(n)" : ""
+    }
+
+    // MARK: - Menu-bar mode
+
+    func applyMenuBarMode() {
+        if settings.menuBarMode { menuBar.install() } else { menuBar.uninstall() }
+    }
+
+    // MARK: - Quiet hours
+
+    var isQuietHour: Bool {
+        guard settings.quietHoursEnabled else { return false }
+        let h = Calendar.current.component(.hour, from: Date())
+        let s = settings.quietStart, e = settings.quietEnd
+        if s == e { return false }
+        if s < e { return h >= s && h < e }
+        return h >= s || h < e   // wraps midnight (e.g. 23 → 7)
+    }
+
+    private func startQuietTimer() {
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + 60, repeating: 60)
+        t.setEventHandler { [weak self] in self?.evaluateQuietHours() }
+        t.resume()
+        quietTimer = t
+        evaluateQuietHours()
+    }
+
+    func evaluateQuietHours() {
+        let q = isQuietHour
+        if q && !quietActive {
+            // entering quiet window → pause running downloads, remember which
+            quietActive = true
+            for item in items where item.status == .downloading {
+                quietPausedIDs.insert(item.id)
+                downloads.pause(item.id)
+            }
+        } else if !q && quietActive {
+            // leaving quiet window → resume only the ones we paused, then pump
+            quietActive = false
+            for id in quietPausedIDs {
+                if let it = item(id), it.status == .paused { downloads.resume(id) }
+            }
+            quietPausedIDs.removeAll()
+            downloads.pump()
+        }
+    }
 
     var activeCount: Int { items.filter { $0.status == .downloading }.count }
     var queuedCount: Int { items.filter { $0.status == .queued }.count }

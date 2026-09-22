@@ -55,7 +55,29 @@ struct SettingsSheet: View {
                         }
                         toggle("Remove sponsor segments (SponsorBlock)", isOn: $draft.sponsorBlock)
                         toggle("Embed metadata", isOn: $draft.embedMetadata)
-                        toggle("Embed subtitles (en)", isOn: $draft.embedSubs)
+                        toggle("Embed subtitles", isOn: $draft.embedSubs)
+                        if draft.embedSubs {
+                            row("Subtitle languages") {
+                                TextField("e.g. en,.*,auto", text: $draft.subtitleLangs)
+                                    .textFieldStyle(.roundedBorder).frame(width: 220)
+                            }
+                        }
+                        row("Cookies from browser") {
+                            Picker("", selection: $draft.cookiesBrowser) {
+                                ForEach(AppSettings.cookieBrowsers, id: \.key) { b in
+                                    Text(b.label).tag(b.key)
+                                }
+                            }.pickerStyle(.menu).frame(width: 220)
+                        }
+                        toggle("Organize downloads by site (YouTube/, Vimeo/, …)", isOn: $draft.organizeByHost)
+                        toggle("Expand playlist links into one item per video", isOn: $draft.expandPlaylists)
+                        if draft.expandPlaylists {
+                            row("Playlist entry cap") {
+                                Stepper(value: $draft.playlistCap, in: 1...500, step: 10) {
+                                    Text("\(draft.playlistCap)").font(.system(size: 12, design: .monospaced))
+                                }
+                            }
+                        }
                     }
 
                     section("Clipboard") {
@@ -106,6 +128,34 @@ struct SettingsSheet: View {
                         Button(action: { state.checkForAppUpdateNow() }) {
                             Label("Check for Tape Nexus update", systemImage: "arrow.triangle.2.circlepath")
                         }.buttonStyle(.bordered).controlSize(.small)
+                    }
+
+                    section("Notifications") {
+                        toggle("Notify when downloads finish or fail", isOn: $draft.notifyOnComplete)
+                    }
+
+                    section("Menu bar") {
+                        toggle("Run as menu-bar app (hide Dock icon)", isOn: $draft.menuBarMode)
+                        Text("When on, Tape Nexus lives in the menu bar. Close the window to background it; use the status icon to show it again.")
+                            .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    }
+
+                    section("Quiet hours") {
+                        toggle("Pause all downloads during a time window", isOn: $draft.quietHoursEnabled)
+                        if draft.quietHoursEnabled {
+                            row("From (hour)") {
+                                Stepper(value: $draft.quietStart, in: 0...23) {
+                                    Text("\(draft.quietStart):00").font(.system(size: 12, design: .monospaced))
+                                }
+                            }
+                            row("To (hour)") {
+                                Stepper(value: $draft.quietEnd, in: 0...23) {
+                                    Text("\(draft.quietEnd):00").font(.system(size: 12, design: .monospaced))
+                                }
+                            }
+                            Text("New downloads won't start and running ones pause during the window; they resume automatically when it ends.")
+                                .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        }
                     }
                 }
                 .padding(18)

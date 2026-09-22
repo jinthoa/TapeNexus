@@ -199,6 +199,20 @@ final class YTDLPController: @unchecked Sendable {
         return .failed(trimmed.isEmpty ? "Could not verify link (yt-dlp exited \(r.code))" : trimmed)
     }
 
+    /// Flat-playlist probe: returns the entry URLs of a playlist link, or nil if
+    /// the URL isn't a playlist / can't be expanded. Capped at `cap` entries.
+    func simulatePlaylist(_ url: String, cap: Int) -> [String]? {
+        let r = runSync([
+            "--flat-playlist", "--no-warnings", "--no-playlist-reverse",
+            "--print", "%(url)s", url
+        ], timeout: 45)
+        guard r.code == 0 else { return nil }
+        let entries = r.out.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.hasPrefix("http") }
+        return entries.isEmpty ? nil : Array(entries.prefix(max(1, cap)))
+    }
+
     // MARK: - Download
 
     /// Spawns a download for `item`. Returns the yt-dlp pid (0 on failure).
@@ -285,6 +299,14 @@ final class YTDLPController: @unchecked Sendable {
 
     private func buildArgs(item: DownloadItem, settings: AppSettings) -> [String] {
         let dest = settings.destinationFolder
+        // Per-item format override falls back to the global setting.
+        let preset = item.formatPreset.isEmpty ? settings.formatPreset : item.formatPreset
+        let custom = item.formatPreset.isEmpty ? settings.customFormat : item.customFormat
+        // Per-host organization files into <dest>/<extractor>/<title>.<ext>
+        // (e.g. YouTube/, Vimeo/) instead of a flat dump.
+        let outTemplate = settings.organizeByHost
+            ? "\(dest)/%(extractor)s/%(title)s.%(ext)s"
+            : "\(dest)/%(title)s.%(ext)s"
         var args: [String] = [
             "--newline",
             // --progress turns progress output ON for a piped stdout (it's on
@@ -295,12 +317,28 @@ final class YTDLPController: @unchecked Sendable {
             "--no-playlist",
             "--no-mtime",
             "--ffmpeg-location", ffmpegLocation.path,
-            "-f", settings.formatArg(),
-            "-o", "\(dest)/%(title)s.%(ext)s",
+            "-f", AppSettings.formatArg(preset: preset, custom: custom),
+            "-o", outTemplate,
             "--progress-template", "download:DJ %(progress)j",
             "--progress-template", "postprocess:PJ %(progress)j",
             "--print", "after_move:FILEPATH:%(filepath)s",
         ]
+        // Auth: read cookies from a browser profile so age-restricted /
+        // members-only / login-gated content can be downloaded.
+        if !settings.cookiesBrowser.isEmpty {
+            args += ["--cookies-from-browser", settings.cookiesBrowser]
+        }
+        // Time-range clip. yt-dlp's --download-sections takes "*START-END";
+        // one-sided ranges use 0 / inf. --force-keyframes-at-cuts keeps cuts
+        // accurate (re-encodes at boundaries).
+        if item.hasClip {
+            let start = item.clipStart.isEmpty ? "0" : item.clipStart
+            let section: String
+            if item.clipEnd.isEmpty { section = "*\(start)-inf" }
+            else if item.clipStart.isEmpty { section = "*0-\(item.clipEnd)" }
+            else { section = "*\(start)-\(item.clipEnd)" }
+            args += ["--download-sections", section, "--force-keyframes-at-cuts"]
+        }
         if settings.sponsorBlock {
             args += ["--sponsorblock-remove", "default"]
         }
@@ -308,7 +346,8 @@ final class YTDLPController: @unchecked Sendable {
             args += ["--embed-metadata"]
         }
         if settings.embedSubs {
-            args += ["--write-subs", "--embed-subs", "--sub-langs", "en,.*,auto"]
+            let langs = settings.subtitleLangs.isEmpty ? "en,.*,auto" : settings.subtitleLangs
+            args += ["--write-subs", "--embed-subs", "--sub-langs", langs]
         }
         args.append(item.url)
         return args

@@ -6,10 +6,10 @@ A native macOS app that watches your clipboard, queues any URL **yt-dlp supports
 
 ## Download & install
 
-1. Download **`TapeNexus-1.0.1.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.2.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. Install it:
    ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.1.pkg -target /
+   sudo installer -pkg ~/Downloads/TapeNexus-1.0.2.pkg -target /
    ```
 3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
    ```bash
@@ -22,9 +22,16 @@ A native macOS app that watches your clipboard, queues any URL **yt-dlp supports
 - **Clipboard auto-grab** — detects copied http(s) URLs; only adds links yt-dlp actually supports (verified via `--simulate`). Unsupported links are silently skipped.
 - **Sleek single-window dashboard** (dark UI) — thumbnails, title, host, format, live progress bar, speed, ETA, byte counts.
 - **Unified list with filter** — All / Active / Done / Failed stay in one list (no separate history page); counts update live.
-- **Per-item controls** — pause · resume · stop · retry · reveal in Finder · remove · delete downloaded file.
-- **Toolbar** — Clear done (finished items), Pause all, paste-a-URL field.
-- **Settings sheet** (`⌘,`) — destination folder, default format (Best / 1080p / 720p / Audio / Custom `-f`), concurrent downloads (1–4), clipboard poll interval, SponsorBlock, embed metadata, embed subtitles.
+- **Per-item controls** — pause · resume · stop · retry · reveal in Finder · remove · delete downloaded file. Per-row **format picker** and **clip** (time-range) editor on queued items.
+- **Toolbar** — Clear done (finished items), Pause all, paste-a-URL field. Paste a whole block of URLs (or drop a `.txt` file / drag links onto the window) to queue them all at once.
+- **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium so age-restricted, members-only, and login-gated content downloads.
+- **Playlist expansion** — optionally expand a playlist link into one queue item per video (capped).
+- **Per-host organization** — optionally file downloads into `<site>/<title>.<ext>` (e.g. `YouTube/…`) instead of a flat folder.
+- **Subtitle language picker** — choose which subtitle languages to embed.
+- **Completion notifications + Dock badge** — native macOS notification when a download finishes or fails; Dock badge shows the active count.
+- **Menu-bar mode** — run Tape Nexus as a status-bar-only app (no Dock icon); close the window to background it, use the status icon to bring it back.
+- **Quiet hours** — automatically pause all downloads during a time window and resume when it ends.
+- **Settings sheet** (`⌘,`) — destination folder, default format (Best / 1080p / 720p / Audio / Custom `-f`), concurrent downloads (1–4), clipboard poll interval, SponsorBlock, embed metadata, embed subtitles, plus all of the above.
 - **Auto-start on detection** — optional (default **off**). When off, detected URLs queue up and wait for you to hit ▶ Start now.
 - **yt-dlp auto-update on launch** — fetches the latest macOS binary from GitHub and atomically swaps it. Can be disabled; manual "Check now" in Settings.
 - **Persistence** — queue + history survive restarts (stored in `~/Library/Application Support/TapeNexus/`). Resolved metadata is cached, so re-copied links don't re-hit the network with `--simulate`.
@@ -56,6 +63,8 @@ To install a pkg you built yourself: `sudo installer -pkg build/TapeNexus-<versi
 | `DownloadManager` | Enforces concurrency; implements pause (SIGSTOP tree) / resume (SIGCONT) / stop (SIGTERM→SIGKILL) / retry / clear / delete. |
 | `Updater` | Checks GitHub releases, downloads `yt-dlp_macos`, atomically swaps the Application Support copy. |
 | `AppUpdater` | Checks GitHub for a newer Tape Nexus `.pkg`; downloads + opens Installer for the app itself (launch check is notify-only). |
+| `Notifier` | Posts macOS user notifications on download completion/failure. |
+| `MenuBarController` | Owns the menu-bar status item for menu-bar mode. |
 | `SettingsStore` | JSON persistence under Application Support. |
 
 Pause/resume use real POSIX process signals (`SIGSTOP`/`SIGCONT`) on the yt-dlp process tree, so they genuinely halt and resume I/O.
@@ -73,6 +82,8 @@ Sources/TapeNexus/
   DownloadManager.swift     lifecycle + concurrency + controls
   Updater.swift             yt-dlp GitHub release auto-update
   AppUpdater.swift          app GitHub release self-update (.pkg → Installer)
+  Notifier.swift            macOS user notifications
+  MenuBarController.swift   menu-bar status item
   SettingsStore.swift       JSON persistence
   Views/                    ContentView, QueueView, SettingsView, Theme
   Resources/Info.plist

@@ -50,13 +50,20 @@ struct DownloadItem: Identifiable, Codable, Hashable {
     var addedAt: Date
     var pausedByUser: Bool
 
+    // Per-item overrides (v1.0.2). Empty → fall back to global settings.
+    var formatPreset: String = ""    // "" | "best" | "1080p" | ... | "custom"
+    var customFormat: String = ""    // -f string when preset == "custom"
+    var clipStart: String = ""       // free-text timestamp e.g. "1:23" or "83"
+    var clipEnd: String = ""
+
     // transient (not Codable)
     var pid: pid_t = 0
 
     enum CodingKeys: String, CodingKey {
         case id, url, title, uploader, thumbnailURL, durationStr, status,
              progress, speedStr, etaStr, formatDesc, errorMessage,
-             downloadedBytes, totalBytes, outputFilePath, addedAt, pausedByUser
+             downloadedBytes, totalBytes, outputFilePath, addedAt, pausedByUser,
+             formatPreset, customFormat, clipStart, clipEnd
     }
 
     init(id: UUID = UUID(), url: String, title: String = "", uploader: String = "",
@@ -64,7 +71,9 @@ struct DownloadItem: Identifiable, Codable, Hashable {
          status: DownloadStatus = .queued, progress: Double = 0,
          speedStr: String = "", etaStr: String = "", formatDesc: String = "",
          errorMessage: String = "", downloadedBytes: Int64 = 0, totalBytes: Int64 = 0,
-         outputFilePath: String = "", addedAt: Date = Date(), pausedByUser: Bool = false) {
+         outputFilePath: String = "", addedAt: Date = Date(), pausedByUser: Bool = false,
+         formatPreset: String = "", customFormat: String = "",
+         clipStart: String = "", clipEnd: String = "") {
         self.id = id; self.url = url; self.title = title; self.uploader = uploader
         self.thumbnailURL = thumbnailURL; self.durationStr = durationStr
         self.status = status; self.progress = progress; self.speedStr = speedStr
@@ -72,7 +81,35 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         self.errorMessage = errorMessage; self.downloadedBytes = downloadedBytes
         self.totalBytes = totalBytes; self.outputFilePath = outputFilePath
         self.addedAt = addedAt; self.pausedByUser = pausedByUser
+        self.formatPreset = formatPreset; self.customFormat = customFormat
+        self.clipStart = clipStart; self.clipEnd = clipEnd
     }
+
+    private init(fromCore dec: Decoder) throws {
+        let c = try dec.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        url = try c.decode(String.self, forKey: .url)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        uploader = try c.decodeIfPresent(String.self, forKey: .uploader) ?? ""
+        thumbnailURL = try c.decodeIfPresent(String.self, forKey: .thumbnailURL) ?? ""
+        durationStr = try c.decodeIfPresent(String.self, forKey: .durationStr) ?? ""
+        status = try c.decode(DownloadStatus.self, forKey: .status)
+        progress = try c.decodeIfPresent(Double.self, forKey: .progress) ?? 0
+        speedStr = try c.decodeIfPresent(String.self, forKey: .speedStr) ?? ""
+        etaStr = try c.decodeIfPresent(String.self, forKey: .etaStr) ?? ""
+        formatDesc = try c.decodeIfPresent(String.self, forKey: .formatDesc) ?? ""
+        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage) ?? ""
+        downloadedBytes = try c.decodeIfPresent(Int64.self, forKey: .downloadedBytes) ?? 0
+        totalBytes = try c.decodeIfPresent(Int64.self, forKey: .totalBytes) ?? 0
+        outputFilePath = try c.decodeIfPresent(String.self, forKey: .outputFilePath) ?? ""
+        addedAt = try c.decodeIfPresent(Date.self, forKey: .addedAt) ?? Date()
+        pausedByUser = try c.decodeIfPresent(Bool.self, forKey: .pausedByUser) ?? false
+        formatPreset = try c.decodeIfPresent(String.self, forKey: .formatPreset) ?? ""
+        customFormat = try c.decodeIfPresent(String.self, forKey: .customFormat) ?? ""
+        clipStart = try c.decodeIfPresent(String.self, forKey: .clipStart) ?? ""
+        clipEnd = try c.decodeIfPresent(String.self, forKey: .clipEnd) ?? ""
+    }
+    init(from decoder: Decoder) throws { try self.init(fromCore: decoder) }
 
     var displayTitle: String { title.isEmpty ? url : title }
     var host: String {
@@ -86,6 +123,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         }
         return d.isEmpty ? "—" : d
     }
+    var hasClip: Bool { !clipStart.isEmpty || !clipEnd.isEmpty }
 }
 
 struct AppSettings: Codable, Equatable {
@@ -101,6 +139,18 @@ struct AppSettings: Codable, Equatable {
     var embedSubs: Bool
     var pollIntervalSeconds: Double
 
+    // v1.0.2 additions — all decodeIfPresent so old settings.json upgrades cleanly.
+    var cookiesBrowser: String = ""          // "" | "safari" | "chrome" | "firefox" | "edge" | "brave" | "chromium"
+    var subtitleLangs: String = "en,.*,auto" // --sub-langs value
+    var organizeByHost: Bool = false         // file into <dest>/<extractor>/<title>.<ext>
+    var expandPlaylists: Bool = false        // expand a playlist URL into per-video queue items
+    var playlistCap: Int = 50                // safety cap on expanded playlist entries
+    var notifyOnComplete: Bool = true        // macOS notification when a download finishes/fails
+    var menuBarMode: Bool = false            // run as a menu-bar-only app (no Dock icon)
+    var quietHoursEnabled: Bool = false      // auto-pause all downloads during a time window
+    var quietStart: Int = 23                 // quiet window start hour (0–23)
+    var quietEnd: Int = 7                    // quiet window end hour (0–23)
+
     static let formatPresets: [(key: String, label: String, arg: String)] = [
         ("best",   "Best (mp4)",        "bestvideo*+bestaudio/best"),
         ("1080p",  "Up to 1080p",       "bestvideo[height<=1080]+bestaudio/best[height<=1080]"),
@@ -108,6 +158,74 @@ struct AppSettings: Codable, Equatable {
         ("audio",  "Audio only (m4a)",  "bestaudio/best"),
         ("custom", "Custom…",           "")
     ]
+
+    static let cookieBrowsers: [(key: String, label: String)] = [
+        ("",         "None"),
+        ("safari",   "Safari"),
+        ("chrome",   "Chrome"),
+        ("firefox",  "Firefox"),
+        ("edge",     "Edge"),
+        ("brave",    "Brave"),
+        ("chromium", "Chromium"),
+    ]
+
+    enum CodingKeys: String, CodingKey {
+        case destinationFolder, formatPreset, customFormat, maxConcurrent,
+             autoGrabClipboard, autoStartDownloads, autoUpdateYTDLP, sponsorBlock,
+             embedMetadata, embedSubs, pollIntervalSeconds,
+             cookiesBrowser, subtitleLangs, organizeByHost, expandPlaylists,
+             playlistCap, notifyOnComplete, menuBarMode,
+             quietHoursEnabled, quietStart, quietEnd
+    }
+
+    init(destinationFolder: String, formatPreset: String, customFormat: String,
+         maxConcurrent: Int, autoGrabClipboard: Bool, autoStartDownloads: Bool,
+         autoUpdateYTDLP: Bool, sponsorBlock: Bool, embedMetadata: Bool,
+         embedSubs: Bool, pollIntervalSeconds: Double,
+         cookiesBrowser: String = "", subtitleLangs: String = "en,.*,auto",
+         organizeByHost: Bool = false, expandPlaylists: Bool = false,
+         playlistCap: Int = 50, notifyOnComplete: Bool = true,
+         menuBarMode: Bool = false, quietHoursEnabled: Bool = false,
+         quietStart: Int = 23, quietEnd: Int = 7) {
+        self.destinationFolder = destinationFolder
+        self.formatPreset = formatPreset; self.customFormat = customFormat
+        self.maxConcurrent = maxConcurrent
+        self.autoGrabClipboard = autoGrabClipboard
+        self.autoStartDownloads = autoStartDownloads
+        self.autoUpdateYTDLP = autoUpdateYTDLP
+        self.sponsorBlock = sponsorBlock; self.embedMetadata = embedMetadata
+        self.embedSubs = embedSubs; self.pollIntervalSeconds = pollIntervalSeconds
+        self.cookiesBrowser = cookiesBrowser; self.subtitleLangs = subtitleLangs
+        self.organizeByHost = organizeByHost; self.expandPlaylists = expandPlaylists
+        self.playlistCap = playlistCap; self.notifyOnComplete = notifyOnComplete
+        self.menuBarMode = menuBarMode; self.quietHoursEnabled = quietHoursEnabled
+        self.quietStart = quietStart; self.quietEnd = quietEnd
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        destinationFolder = try c.decode(String.self, forKey: .destinationFolder)
+        formatPreset = try c.decodeIfPresent(String.self, forKey: .formatPreset) ?? "1080p"
+        customFormat = try c.decodeIfPresent(String.self, forKey: .customFormat) ?? "bestvideo*+bestaudio/best"
+        maxConcurrent = try c.decodeIfPresent(Int.self, forKey: .maxConcurrent) ?? 2
+        autoGrabClipboard = try c.decodeIfPresent(Bool.self, forKey: .autoGrabClipboard) ?? true
+        autoStartDownloads = try c.decodeIfPresent(Bool.self, forKey: .autoStartDownloads) ?? false
+        autoUpdateYTDLP = try c.decodeIfPresent(Bool.self, forKey: .autoUpdateYTDLP) ?? true
+        sponsorBlock = try c.decodeIfPresent(Bool.self, forKey: .sponsorBlock) ?? false
+        embedMetadata = try c.decodeIfPresent(Bool.self, forKey: .embedMetadata) ?? true
+        embedSubs = try c.decodeIfPresent(Bool.self, forKey: .embedSubs) ?? false
+        pollIntervalSeconds = try c.decodeIfPresent(Double.self, forKey: .pollIntervalSeconds) ?? 1.2
+        cookiesBrowser = try c.decodeIfPresent(String.self, forKey: .cookiesBrowser) ?? ""
+        subtitleLangs = try c.decodeIfPresent(String.self, forKey: .subtitleLangs) ?? "en,.*,auto"
+        organizeByHost = try c.decodeIfPresent(Bool.self, forKey: .organizeByHost) ?? false
+        expandPlaylists = try c.decodeIfPresent(Bool.self, forKey: .expandPlaylists) ?? false
+        playlistCap = try c.decodeIfPresent(Int.self, forKey: .playlistCap) ?? 50
+        notifyOnComplete = try c.decodeIfPresent(Bool.self, forKey: .notifyOnComplete) ?? true
+        menuBarMode = try c.decodeIfPresent(Bool.self, forKey: .menuBarMode) ?? false
+        quietHoursEnabled = try c.decodeIfPresent(Bool.self, forKey: .quietHoursEnabled) ?? false
+        quietStart = try c.decodeIfPresent(Int.self, forKey: .quietStart) ?? 23
+        quietEnd = try c.decodeIfPresent(Int.self, forKey: .quietEnd) ?? 7
+    }
 
     static var `default`: AppSettings {
         let dest = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?
@@ -128,15 +246,24 @@ struct AppSettings: Codable, Equatable {
         )
     }
 
-    func formatArg() -> String {
-        if formatPreset == "custom" { return customFormat.isEmpty ? "bestvideo*+bestaudio/best" : customFormat }
-        return Self.formatPresets.first(where: { $0.key == formatPreset })?.arg
+    func formatArg() -> String { Self.formatArg(preset: formatPreset, custom: customFormat) }
+
+    /// Shared resolver so a per-item override or the global setting both resolve
+    /// through one path. Falls back to "best" if the preset is unknown/empty.
+    static func formatArg(preset: String, custom: String) -> String {
+        if preset.isEmpty { return "bestvideo*+bestaudio/best" }
+        if preset == "custom" { return custom.isEmpty ? "bestvideo*+bestaudio/best" : custom }
+        return formatPresets.first(where: { $0.key == preset })?.arg
             ?? "bestvideo*+bestaudio/best"
     }
-    func formatLabel() -> String {
-        if formatPreset == "custom" { return "custom: \(customFormat)" }
-        return Self.formatPresets.first(where: { $0.key == formatPreset })?.label ?? "Best"
+
+    static func formatLabel(preset: String, custom: String) -> String {
+        if preset.isEmpty { return "" }
+        if preset == "custom" { return "custom: \(custom)" }
+        return formatPresets.first(where: { $0.key == preset })?.label ?? "Best"
     }
+
+    func formatLabel() -> String { Self.formatLabel(preset: formatPreset, custom: customFormat) }
 }
 
 struct UpdateStatus: Equatable {
