@@ -28,6 +28,8 @@ A quick tour of what's in the box, including the recently added features:
 - **Playlist expansion + per-host organization** — expand a playlist link into one item per video (capped); optionally file downloads into `<site>/<title>.<ext>`.
 - **Source-friendly throttling** *(recent)* — metadata lookups run at most `max_concurrent` at a time (not all at once), and an optional **delay between starts** (up to 5 min) spaces out downloads, so adding a big playlist or batch doesn't get you IP-throttled by the source site. Bulk adds and playlist expansions resolve **top-to-bottom**, so with hundreds of items the visible top rows gather metadata first — no scrolling to watch progress. When a download is holding for the start delay, a live **"Starting in Ns"** countdown shows exactly when it'll fire.
 - **Startup update check** *(recent)* — on launch the app checks GitHub for a newer Tape Nexus release and, if one's found, pops a prompt with **Skip** / **Download and install** (instead of a passive notify). On Windows, "Download and install" fetches the new `.exe`, launches it, and quits the old one so the new version takes over.
+- **Auto-retry failed downloads** *(recent)* — optionally re-queue a failed download up to a configurable number of attempts (default off; max 1–10) before giving up. A live **"Auto-retry 2/3"** badge on the row shows which attempt is running. User-stopped downloads are never auto-retried; the start delay (if set) paces the retries.
+- **Real .mp4 output** *(recent)* — the "Best (mp4)", 1080p, and 720p presets now prefer mp4/m4a source streams and pass `--merge-output-format mp4`, so the merged output is actually an `.mp4` file instead of falling back to webm/mkv when the best video is VP9.
 - **Subtitle language picker, SponsorBlock, metadata/subtitle embedding**.
 - **Completion notifications + Dock badge** — native notification when a download finishes or fails; Dock badge shows the active count.
 - **Menu-bar mode** — run as a status-bar-only app with no Dock icon.
@@ -40,10 +42,10 @@ A quick tour of what's in the box, including the recently added features:
 ## Download & install
 
 ### macOS
-1. Download **`TapeNexus-1.0.11.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.12.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. Install it:
    ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.11.pkg -target /
+   sudo installer -pkg ~/Downloads/TapeNexus-1.0.12.pkg -target /
    ```
 3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
    ```bash

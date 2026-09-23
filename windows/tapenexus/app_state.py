@@ -556,14 +556,30 @@ class AppState(QObject):
             self._start(it, suppress_cookies=True)
             return
         if ok:
-            self.update(item_id, status="done", progress=1.0, error_message="", pid=0)
+            self.update(item_id, status="done", progress=1.0, error_message="",
+                        pid=0, retry_count=0)
             self._persist_queue()
         else:
             if it.status == "downloading":
                 self.update(item_id, status="failed", error_message=err, pid=0)
         self._workers.pop(item_id, None)
-        # notify
+        # Auto-retry: if the item genuinely failed (not user-stopped),
+        # auto-retry is on, and the budget isn't spent, re-queue it for another
+        # attempt instead of leaving it failed. The start delay (if set) paces
+        # the retries via pump()/_schedule_starts().
         finished_it = self.item(item_id)
+        if (not ok and finished_it and finished_it.status == "failed"
+                and self.settings.auto_retry_failed
+                and finished_it.retry_count < self.settings.max_auto_retries):
+            self.update(item_id,
+                        retry_count=finished_it.retry_count + 1,
+                        status="queued", progress=0.0, error_message="",
+                        speed_str="", eta_str="",
+                        downloaded_bytes=0, total_bytes=0, pid=0)
+            self._persist_queue()
+            self.pump()
+            return
+        # notify (only for genuinely terminal outcomes)
         if finished_it and self.settings.notify_on_complete and self._tray:
             title = "Download complete" if ok else "Download failed"
             self._tray.showMessage(title, finished_it.display_title)
@@ -610,7 +626,8 @@ class AppState(QObject):
             self.stop(item_id)
         self._cookies_retried.discard(item_id)
         self.update(item_id, status="queued", progress=0.0, error_message="",
-                    speed_str="", eta_str="", downloaded_bytes=0, total_bytes=0, pid=0)
+                    speed_str="", eta_str="", downloaded_bytes=0, total_bytes=0,
+                    pid=0, retry_count=0)
         self._persist_queue()
         self.pump()
 

@@ -91,6 +91,7 @@ final class DownloadManager {
                 state.update(id) {
                     if ok {
                         $0.status = .done; $0.progress = 1; $0.errorMessage = ""
+                        $0.retryCount = 0
                     } else {
                         // don't override a user-driven stopped/paused state
                         if $0.status == .downloading {
@@ -100,6 +101,25 @@ final class DownloadManager {
                     $0.pid = 0
                 }
                 if ok { state.persist() }
+                // Auto-retry: if the item genuinely failed (not user-stopped),
+                // auto-retry is on, and the budget isn't spent, re-queue it for
+                // another attempt instead of leaving it failed. The start delay
+                // (if set) paces the retries via pump()/scheduleStarts().
+                let s = self.settings()
+                if !ok, let it = state.item(id), it.status == .failed,
+                   s.autoRetryFailed, it.retryCount < s.maxAutoRetries {
+                    state.update(id) {
+                        $0.retryCount += 1
+                        $0.status = .queued; $0.progress = 0; $0.errorMessage = ""
+                        $0.speedStr = ""; $0.etaStr = ""
+                        $0.downloadedBytes = 0; $0.totalBytes = 0; $0.pid = 0
+                        $0.cookiesRetried = false
+                    }
+                    state.persist()
+                    state.refreshBadge()
+                    self.pump()
+                    return
+                }
                 // Notify + dock badge (only for genuinely terminal outcomes).
                 let finished2 = state.item(id)
                 if let it = finished2, (it.status == .done || it.status == .failed),
@@ -154,6 +174,7 @@ final class DownloadManager {
             $0.status = .queued; $0.progress = 0; $0.errorMessage = ""
             $0.speedStr = ""; $0.etaStr = ""; $0.downloadedBytes = 0
             $0.totalBytes = 0; $0.pid = 0; $0.cookiesRetried = false
+            $0.retryCount = 0
         }
         state.persist()
         pump()

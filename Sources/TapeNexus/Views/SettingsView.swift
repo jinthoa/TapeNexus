@@ -64,6 +64,16 @@ struct SettingsSheet: View {
                             Text("Waits this many seconds between starting each download, so a large queue or rapid completions don't hit the source site in a burst.")
                                 .font(.system(size: 11)).foregroundStyle(Theme.muted)
                         }
+                        toggle("Auto-retry failed downloads", isOn: $draft.autoRetryFailed)
+                        if draft.autoRetryFailed {
+                            row("Max auto-retries") {
+                                Stepper(value: $draft.maxAutoRetries, in: 1...10) {
+                                    Text("\(draft.maxAutoRetries)").font(.system(size: 12, design: .monospaced))
+                                }
+                            }
+                            Text("Re-queues a failed download up to this many times before giving up. User-stopped downloads are never auto-retried.")
+                                .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        }
                         toggle("Remove sponsor segments (SponsorBlock)", isOn: $draft.sponsorBlock)
                         toggle("Embed metadata", isOn: $draft.embedMetadata)
                         toggle("Embed subtitles", isOn: $draft.embedSubs)

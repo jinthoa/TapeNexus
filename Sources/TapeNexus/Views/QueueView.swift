@@ -238,6 +238,15 @@ struct QueueRow: View {
                             }
                         }
                     }
+                    if item.status == .queued && item.retryCount > 0 {
+                        // Auto-retry in flight: show which attempt this is so a
+                        // re-queued failed item reads as retrying, not mysterious.
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 10)).foregroundStyle(Theme.muted)
+                            Text("Auto-retry \(item.retryCount)/\(state.settings.maxAutoRetries)")
+                                .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted)
+                        }
+                    }
                     if item.status == .failed && !item.errorMessage.isEmpty {
                         Text(item.errorMessage).font(.system(size: 10.5)).foregroundStyle(Theme.err).lineLimit(1)
                     }

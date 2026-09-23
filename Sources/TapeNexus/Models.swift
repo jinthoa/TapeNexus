@@ -59,6 +59,11 @@ struct DownloadItem: Identifiable, Codable, Hashable {
     // v1.0.4: per-item scheduling. nil = start whenever a slot is free.
     var startAt: Date? = nil
 
+    // v1.0.12: auto-retry count for failed downloads. Persisted so a restart
+    // doesn't reset the budget (which would retry forever). Reset on success,
+    // manual retry, and fresh add.
+    var retryCount: Int = 0
+
     // transient (not Codable)
     var pid: pid_t = 0
     /// True once we've already retried this item without browser cookies after
@@ -76,7 +81,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
              progress, speedStr, etaStr, formatDesc, errorMessage,
              downloadedBytes, totalBytes, outputFilePath, addedAt, pausedByUser,
              formatPreset, customFormat, clipStart, clipEnd,
-             startAt
+             startAt,
+             retryCount
     }
 
     init(id: UUID = UUID(), url: String, title: String = "", uploader: String = "",
@@ -87,7 +93,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
          outputFilePath: String = "", addedAt: Date = Date(), pausedByUser: Bool = false,
          formatPreset: String = "", customFormat: String = "",
          clipStart: String = "", clipEnd: String = "",
-         startAt: Date? = nil) {
+         startAt: Date? = nil,
+         retryCount: Int = 0) {
         self.id = id; self.url = url; self.title = title; self.uploader = uploader
         self.thumbnailURL = thumbnailURL; self.durationStr = durationStr
         self.status = status; self.progress = progress; self.speedStr = speedStr
@@ -98,6 +105,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         self.formatPreset = formatPreset; self.customFormat = customFormat
         self.clipStart = clipStart; self.clipEnd = clipEnd
         self.startAt = startAt
+        self.retryCount = retryCount
     }
 
     private init(fromCore dec: Decoder) throws {
@@ -124,6 +132,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         clipStart = try c.decodeIfPresent(String.self, forKey: .clipStart) ?? ""
         clipEnd = try c.decodeIfPresent(String.self, forKey: .clipEnd) ?? ""
         startAt = try c.decodeIfPresent(Date.self, forKey: .startAt)
+        retryCount = try c.decodeIfPresent(Int.self, forKey: .retryCount) ?? 0
     }
     init(from decoder: Decoder) throws { try self.init(fromCore: decoder) }
 
@@ -210,10 +219,14 @@ struct AppSettings: Codable, Equatable {
     var quietEnd: Int = 7                    // quiet window end hour (0–23)
     var downloadDelaySeconds: Int = 0        // seconds to wait between starting each download (0 = off); avoids bursting the source site
 
+    // v1.0.12: auto-retry failed downloads up to a capped number of attempts.
+    var autoRetryFailed: Bool = false
+    var maxAutoRetries: Int = 3
+
     static let formatPresets: [(key: String, label: String, arg: String)] = [
-        ("best",   "Best (mp4)",        "bestvideo*+bestaudio/best"),
-        ("1080p",  "Up to 1080p",       "bestvideo[height<=1080]+bestaudio/best[height<=1080]"),
-        ("720p",   "Up to 720p",        "bestvideo[height<=720]+bestaudio/best[height<=720]"),
+        ("best",   "Best (mp4)",        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"),
+        ("1080p",  "Up to 1080p",       "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]"),
+        ("720p",   "Up to 720p",        "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]"),
         ("audio",  "Audio only (m4a)",  "bestaudio/best"),
         ("mp3",    "Audio only (MP3)",  "bestaudio/best"),
         ("custom", "Custom…",           "")
@@ -240,7 +253,8 @@ struct AppSettings: Codable, Equatable {
              cookiesBrowser, subtitleLangs, organizeByHost, expandPlaylists,
              playlistCap, notifyOnComplete, menuBarMode,
              quietHoursEnabled, quietStart, quietEnd,
-             downloadDelaySeconds
+             downloadDelaySeconds,
+             autoRetryFailed, maxAutoRetries
     }
 
     init(destinationFolder: String, formatPreset: String, customFormat: String,
@@ -252,7 +266,8 @@ struct AppSettings: Codable, Equatable {
          playlistCap: Int = 50, notifyOnComplete: Bool = true,
          menuBarMode: Bool = false, quietHoursEnabled: Bool = false,
          quietStart: Int = 23, quietEnd: Int = 7,
-         downloadDelaySeconds: Int = 0) {
+         downloadDelaySeconds: Int = 0,
+         autoRetryFailed: Bool = false, maxAutoRetries: Int = 3) {
         self.destinationFolder = destinationFolder
         self.formatPreset = formatPreset; self.customFormat = customFormat
         self.maxConcurrent = maxConcurrent
@@ -267,13 +282,14 @@ struct AppSettings: Codable, Equatable {
         self.menuBarMode = menuBarMode; self.quietHoursEnabled = quietHoursEnabled
         self.quietStart = quietStart; self.quietEnd = quietEnd
         self.downloadDelaySeconds = downloadDelaySeconds
+        self.autoRetryFailed = autoRetryFailed; self.maxAutoRetries = maxAutoRetries
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         destinationFolder = try c.decode(String.self, forKey: .destinationFolder)
         formatPreset = try c.decodeIfPresent(String.self, forKey: .formatPreset) ?? "1080p"
-        customFormat = try c.decodeIfPresent(String.self, forKey: .customFormat) ?? "bestvideo*+bestaudio/best"
+        customFormat = try c.decodeIfPresent(String.self, forKey: .customFormat) ?? "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"
         maxConcurrent = try c.decodeIfPresent(Int.self, forKey: .maxConcurrent) ?? 2
         autoGrabClipboard = try c.decodeIfPresent(Bool.self, forKey: .autoGrabClipboard) ?? true
         autoStartDownloads = try c.decodeIfPresent(Bool.self, forKey: .autoStartDownloads) ?? false
@@ -293,6 +309,8 @@ struct AppSettings: Codable, Equatable {
         quietStart = try c.decodeIfPresent(Int.self, forKey: .quietStart) ?? 23
         quietEnd = try c.decodeIfPresent(Int.self, forKey: .quietEnd) ?? 7
         downloadDelaySeconds = try c.decodeIfPresent(Int.self, forKey: .downloadDelaySeconds) ?? 0
+        autoRetryFailed = try c.decodeIfPresent(Bool.self, forKey: .autoRetryFailed) ?? false
+        maxAutoRetries = try c.decodeIfPresent(Int.self, forKey: .maxAutoRetries) ?? 3
     }
 
     static var `default`: AppSettings {
@@ -302,7 +320,7 @@ struct AppSettings: Codable, Equatable {
         return AppSettings(
             destinationFolder: dest,
             formatPreset: "1080p",
-            customFormat: "bestvideo*+bestaudio/best",
+            customFormat: "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best",
             maxConcurrent: 2,
             autoGrabClipboard: true,
             autoStartDownloads: false,
@@ -319,10 +337,10 @@ struct AppSettings: Codable, Equatable {
     /// Shared resolver so a per-item override or the global setting both resolve
     /// through one path. Falls back to "best" if the preset is unknown/empty.
     static func formatArg(preset: String, custom: String) -> String {
-        if preset.isEmpty { return "bestvideo*+bestaudio/best" }
-        if preset == "custom" { return custom.isEmpty ? "bestvideo*+bestaudio/best" : custom }
+        if preset.isEmpty { return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best" }
+        if preset == "custom" { return custom.isEmpty ? "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best" : custom }
         return formatPresets.first(where: { $0.key == preset })?.arg
-            ?? "bestvideo*+bestaudio/best"
+            ?? "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"
     }
 
     static func formatLabel(preset: String, custom: String) -> String {

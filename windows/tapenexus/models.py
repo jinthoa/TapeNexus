@@ -21,9 +21,9 @@ class DownloadStatus(str, Enum):
 
 # (key, label, -f arg, audio-extract format or None)
 FORMAT_PRESETS: List[tuple] = [
-    ("best", "Best (mp4)", "bestvideo*+bestaudio/best", None),
-    ("1080p", "Up to 1080p", "bestvideo[height<=1080]+bestaudio/best[height<=1080]", None),
-    ("720p", "Up to 720p", "bestvideo[height<=720]+bestaudio/best[height<=720]", None),
+    ("best", "Best (mp4)", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best", None),
+    ("1080p", "Up to 1080p", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]", None),
+    ("720p", "Up to 720p", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]", None),
     ("audio", "Audio only (m4a)", "bestaudio/best", None),
     ("mp3", "Audio only (MP3)", "bestaudio/best", "mp3"),
     ("custom", "Custom…", "", None),
@@ -44,13 +44,13 @@ COOKIE_BROWSERS = [
 
 def format_arg(preset: str, custom: str) -> str:
     if not preset:
-        return "bestvideo*+bestaudio/best"
+        return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"
     if preset == "custom":
-        return custom or "bestvideo*+bestaudio/best"
+        return custom or "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"
     for k, _label, arg, _ext in FORMAT_PRESETS:
         if k == preset:
-            return arg or "bestvideo*+bestaudio/best"
-    return "bestvideo*+bestaudio/best"
+            return arg or "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"
+    return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"
 
 
 def format_label(preset: str, custom: str) -> str:
@@ -96,6 +96,10 @@ class DownloadItem:
     clip_end: str = ""
     # v1.0.4: per-item scheduling (ISO string, "" = start whenever a slot is free)
     start_at: str = ""
+    # v1.0.12: auto-retry count for failed downloads. Persisted so a restart
+    # doesn't reset the budget (which would retry forever). Reset on success,
+    # manual retry, and fresh add.
+    retry_count: int = 0
 
     # transient (not persisted)
     pid: int = 0
@@ -163,7 +167,7 @@ class DownloadItem:
 class AppSettings:
     destination_folder: str = ""
     format_preset: str = "1080p"
-    custom_format: str = "bestvideo*+bestaudio/best"
+    custom_format: str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"
     max_concurrent: int = 2
     auto_grab_clipboard: bool = True
     auto_start_downloads: bool = False
@@ -182,6 +186,9 @@ class AppSettings:
     quiet_start: int = 23
     quiet_end: int = 7
     download_delay_seconds: int = 0  # seconds between starting each download (0 = off)
+    # v1.0.12: auto-retry failed downloads up to a capped number of attempts.
+    auto_retry_failed: bool = False
+    max_auto_retries: int = 3
 
     @staticmethod
     def default() -> "AppSettings":

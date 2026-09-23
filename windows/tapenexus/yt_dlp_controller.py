@@ -261,6 +261,12 @@ class YTDLPController:
         ext = audio_extract_format(preset)
         if ext:
             args += ["--extract-audio", "--audio-format", ext]
+        else:
+            # Video presets: package the merged output as an .mp4 container so
+            # "Best (mp4)" / 1080p / 720p actually deliver .mp4 (the format
+            # strings already prefer [ext=mp4]/[ext=m4a] streams; this ensures
+            # the merge is mp4 even when the source is webm/mkv).
+            args += ["--merge-output-format", "mp4"]
         if settings.sponsor_block:
             args += ["--sponsorblock-remove", "default"]
         if settings.embed_metadata:
