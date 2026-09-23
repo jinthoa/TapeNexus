@@ -13,15 +13,14 @@ final class Updater {
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
             let current = self.yt.currentVersion()
-            guard let release = self.fetchLatestRelease() else {
+            guard let latest = self.fetchLatestTag() else {
                 self.report(.init(currentVersion: current, state: .failed,
                                   message: "Could not reach GitHub."))
                 return
             }
-            let latest = release.tagName
             if self.isNewer(latest: latest, current: current) {
                 if auto {
-                    self.performUpdate(current: current, latest: latest, release: release)
+                    self.performUpdate(current: current, latest: latest, tag: latest)
                 } else {
                     self.report(.init(currentVersion: current, latestVersion: latest,
                                       state: .idle,
@@ -35,17 +34,14 @@ final class Updater {
         }
     }
 
-    private func performUpdate(current: String, latest: String, release: Release) {
+    private func performUpdate(current: String, latest: String, tag: String) {
         report(.init(currentVersion: current, latestVersion: latest,
                      state: .downloading, message: "Downloading yt-dlp \(latest)…"))
-        guard let asset = release.assets.first(where: { $0.name == "yt-dlp_macos" })
-                ?? release.assets.first(where: { $0.name == "yt-dlp" }) else {
-            report(.init(currentVersion: current, latestVersion: latest,
-                         state: .failed, message: "No macOS asset in latest release."))
-            return
-        }
+        // The yt-dlp_macos asset lives at a predictable URL under the tag — no
+        // need to enumerate release assets via the (rate-limited) API.
+        let assetName = "yt-dlp_macos"
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("yt-dlp-\(UUID().uuidString)")
-        guard let url = URL(string: asset.browserDownloadURL),
+        guard let url = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/download/\(tag)/\(assetName)"),
               let data = try? Data(contentsOf: url) else {
             report(.init(currentVersion: current, latestVersion: latest,
                          state: .failed, message: "Download failed."))
@@ -74,31 +70,33 @@ final class Updater {
 
     // MARK: - GitHub
 
-    struct Release: Codable {
-        var tagName: String
-        var assets: [Asset]
-        enum CodingKeys: String, CodingKey { case tagName = "tag_name"; case assets }
-    }
-    struct Asset: Codable {
-        var name: String
-        var browserDownloadURL: String
-        enum CodingKeys: String, CodingKey { case name; case browserDownloadURL = "browser_download_url" }
-    }
-
-    private func fetchLatestRelease() -> Release? {
-        guard let url = URL(string: "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest") else { return nil }
+    /// Resolve the latest yt-dlp release tag WITHOUT the GitHub REST API.
+    ///
+    /// `api.github.com` is rate-limited to 60 req/hr per IP unauthenticated;
+    /// a shared NAT/VPN exhausts that and a 403 fails to decode into a release
+    /// ("Could not reach GitHub"). Instead hit the HTML endpoint
+    /// `github.com/yt-dlp/yt-dlp/releases/latest`, which 302-redirects to
+    /// `.../releases/tag/<tag>` (NOT rate-limited). URLSession follows the
+    /// redirect and the final URL's last path component is the tag
+    /// (e.g. "2026.08.19").
+    private func fetchLatestTag() -> String? {
+        guard let url = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest") else { return nil }
         var req = URLRequest(url: url)
         req.setValue("TapeNexus", forHTTPHeaderField: "User-Agent")
         req.timeoutInterval = 20
         let sem = DispatchSemaphore(value: 0)
-        var result: Data?
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            result = data
+        var finalURL: URL?
+        URLSession.shared.dataTask(with: req) { _, response, _ in
+            if let http = response as? HTTPURLResponse, http.statusCode == 302,
+               let loc = http.value(forHTTPHeaderField: "Location") {
+                finalURL = URL(string: loc)
+            } else {
+                finalURL = response?.url
+            }
             sem.signal()
         }.resume()
         _ = sem.wait(timeout: .now() + 20)
-        guard let data = result else { return nil }
-        return try? JSONDecoder().decode(Release.self, from: data)
+        return finalURL?.lastPathComponent
     }
 
     /// version strings look like "2026.03.17" — compare component-wise.

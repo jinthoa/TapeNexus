@@ -10,7 +10,6 @@ thread; the Qt side (AppState) marshals results onto the main thread via signals
 """
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import urllib.request
@@ -27,12 +26,24 @@ def current_version() -> str:
         return "0"
 
 
-def _fetch_latest_release() -> Optional[dict]:
-    url = f"https://api.github.com/repos/{REPO}/releases/latest"
+def _fetch_latest_tag() -> Optional[str]:
+    """Resolve the latest release tag WITHOUT the GitHub REST API.
+
+    api.github.com is rate-limited to 60 req/hr per IP (unauthenticated); a
+    shared NAT/VPN exhausts that fast, a 403 body fails to parse as a release,
+    and the app reports "Could not reach GitHub." Instead hit the HTML endpoint
+    github.com/<repo>/releases/latest, which 302-redirects to
+    .../releases/tag/<tag> (NOT rate-limited). urllib follows the redirect and
+    the final URL's last path segment is the tag (e.g. "v1.0.12"). We don't need
+    the body, so a HEAD-ish GET that we discard is fine.
+    """
+    url = f"https://github.com/{REPO}/releases/latest"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "TapeNexus"})
         with urllib.request.urlopen(req, timeout=20) as r:
-            return json.loads(r.read().decode("utf-8"))
+            final = r.geturl()  # final URL after all redirects
+        tag = final.rstrip("/").rsplit("/", 1)[-1]
+        return tag or None
     except Exception:
         return None
 
@@ -59,21 +70,18 @@ def _is_newer(latest: str, current: str) -> bool:
 
 def check_latest() -> Optional[Tuple[str, str]]:
     """Return (latest_tag, exe_asset_url) if a newer release exists, else None.
-    Runs a blocking GitHub call — invoke from a background thread."""
-    rel = _fetch_latest_release()
-    if not rel:
+    Runs a blocking GitHub call - invoke from a background thread.
+
+    The exe asset URL is predictable: releases/download/<tag>/TapeNexus-<ver>-win64.exe,
+    so no API/release-asset enumeration is needed.
+    """
+    tag = _fetch_latest_tag()
+    if not tag:
         return None
-    tag = rel.get("tag_name", "")
     if not _is_newer(tag, current_version()):
         return None
-    exe_url = None
-    for a in rel.get("assets", []):
-        name = a.get("name", "")
-        if name.lower().startswith("tapenexus") and name.endswith("-win64.exe"):
-            exe_url = a.get("browser_download_url")
-            break
-    if not exe_url:
-        return None
+    ver = tag.lstrip("vV")
+    exe_url = f"https://github.com/{REPO}/releases/download/{tag}/TapeNexus-{ver}-win64.exe"
     return (tag, exe_url)
 
 
