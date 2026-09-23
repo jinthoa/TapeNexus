@@ -26,11 +26,12 @@ A quick tour of what's in the box, including the recently added features:
 - **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium for age-restricted, members-only, and login-gated content. If the chosen browser's cookie store can't be read (locked DB, schema change, Keychain denied), Tape Nexus automatically retries once without cookies so public content still downloads instead of failing silently.
 - **Real failure reasons** *(recent)* — when a download fails, the actual yt-dlp error line (not just an opaque "exit code 1") is surfaced on the item and in notifications, so you can see *why* it failed.
 - **Playlist expansion + per-host organization** — expand a playlist link into one item per video (capped); optionally file downloads into `<site>/<title>.<ext>`.
-- **Source-friendly throttling** *(recent)* — metadata lookups run at most `max_concurrent` at a time (not all at once), and an optional **delay between starts** (up to 5 min) spaces out downloads, so adding a big playlist or batch doesn't get you IP-throttled by the source site. Bulk adds and playlist expansions resolve **top-to-bottom**, so with hundreds of items the visible top rows gather metadata first — no scrolling to watch progress.
+- **Source-friendly throttling** *(recent)* — metadata lookups run at most `max_concurrent` at a time (not all at once), and an optional **delay between starts** (up to 5 min) spaces out downloads, so adding a big playlist or batch doesn't get you IP-throttled by the source site. Bulk adds and playlist expansions resolve **top-to-bottom**, so with hundreds of items the visible top rows gather metadata first — no scrolling to watch progress. When a download is holding for the start delay, a live **"Starting in Ns"** countdown shows exactly when it'll fire.
+- **Startup update check** *(recent)* — on launch the app checks GitHub for a newer Tape Nexus release and, if one's found, pops a prompt with **Skip** / **Download and install** (instead of a passive notify). On Windows, "Download and install" fetches the new `.exe`, launches it, and quits the old one so the new version takes over.
 - **Subtitle language picker, SponsorBlock, metadata/subtitle embedding**.
 - **Completion notifications + Dock badge** — native notification when a download finishes or fails; Dock badge shows the active count.
 - **Menu-bar mode** — run as a status-bar-only app with no Dock icon.
-- **Auto-update** — yt-dlp fetches its latest binary on launch; the app itself checks GitHub for a newer Tape Nexus release and, from Settings, downloads the new `.pkg` and opens Installer.
+- **Auto-update** — yt-dlp fetches its latest binary on launch; the app itself checks GitHub for a newer Tape Nexus release on startup and offers to download + install it (macOS opens Installer; Windows downloads the new `.exe` and relaunches). Manual check still available from Settings.
 - **Persistence** — queue survives restarts (stored in Application Support); resolved metadata is cached so re-copied links don't re-hit the network.
 - **Universal macOS build** — native on Apple Silicon and Intel; a Windows `.exe` ships from the same releases.
 
@@ -39,10 +40,10 @@ A quick tour of what's in the box, including the recently added features:
 ## Download & install
 
 ### macOS
-1. Download **`TapeNexus-1.0.9.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.10.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. Install it:
    ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.9.pkg -target /
+   sudo installer -pkg ~/Downloads/TapeNexus-1.0.10.pkg -target /
    ```
 3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
    ```bash
@@ -68,7 +69,7 @@ The Windows `.exe` is built by GitHub Actions (`.github/workflows/build-windows.
 - **Toolbar** — Clear done (finished items), Pause all, Retry all, paste-a-URL field. Paste a whole block of URLs (or drop a `.txt` file / drag links onto the window) to queue them all at once.
 - **Cookies / auth** — pull cookies from Safari, Chrome, Firefox, Edge, Brave, or Chromium so age-restricted, members-only, and login-gated content downloads.
 - **Playlist expansion** — optionally expand a playlist link into one queue item per video (capped).
-- **Throttled metadata + download delay** — metadata (`--simulate`) probes run at most `maxConcurrent` at a time, so expanding a large playlist or batch-pasting URLs doesn't fire dozens of requests at the source site at once (which gets you rate-limited / 429'd). Bulk adds and playlist expansions resolve **top-to-bottom** (visible top rows first), so hundreds of items don't force you to scroll to watch progress. An optional **delay between starts** (0–300s, default off) further spaces out downloads; **Start all** and the per-row ▶ Start now both honor the concurrency cap and this delay.
+- **Throttled metadata + download delay** — metadata (`--simulate`) probes run at most `maxConcurrent` at a time, so expanding a large playlist or batch-pasting URLs doesn't fire dozens of requests at the source site at once (which gets you rate-limited / 429'd). Bulk adds and playlist expansions resolve **top-to-bottom** (visible top rows first), so hundreds of items don't force you to scroll to watch progress. An optional **delay between starts** (0–300s, default off) further spaces out downloads; **Start all** and the per-row ▶ Start now both honor the concurrency cap and this delay. Items waiting out the delay show a live **"Starting in Ns"** countdown so you know they're queued-to-fire, not stuck.
 - **Resilient cookies + real error messages** — if `--cookies-from-browser` fails at extraction time (the browser's cookie store is locked or unreadable on that machine), Tape Nexus falls back to a single cookieless retry so public content still downloads. And when a download fails, the actual yt-dlp `ERROR:` line is shown on the item instead of a generic exit-code message.
 - **Per-host organization** — optionally file downloads into `<site>/<title>.<ext>` (e.g. `YouTube/…`) instead of a flat folder.
 - **Subtitle language picker** — choose which subtitle languages to embed.
@@ -79,7 +80,7 @@ The Windows `.exe` is built by GitHub Actions (`.github/workflows/build-windows.
 - **Auto-start on detection** — optional (default **off**). When off, detected URLs queue up and wait for you to hit ▶ Start now; nothing starts on its own.
 - **yt-dlp auto-update on launch** — fetches the latest macOS binary from GitHub and atomically swaps it. Can be disabled; manual "Check now" in Settings.
 - **Persistence** — queue + history survive restarts (stored in `~/Library/Application Support/TapeNexus/`). Resolved metadata is cached, so re-copied links don't re-hit the network with `--simulate`.
-- **App self-update** — checks GitHub for a newer Tape Nexus release; from Settings you can download the new `.pkg` and open Installer to update the app itself (launch checks are notify-only).
+- **App self-update** — on launch the app checks GitHub for a newer Tape Nexus release and pops a **Skip** / **Download and install** prompt (macOS downloads the `.pkg` and opens Installer; Windows downloads the new `.exe`, launches it, and quits the old one). A manual "Check now" is also in Settings.
 - **Universal build** — runs natively on Apple Silicon **and** Intel (arm64 + x86_64 app binary, plus universal `ffmpeg`/`ffprobe`).
 - **PKG installer** — `build.sh` produces a `.pkg` that installs into `/Applications`; universal `ffmpeg` + `ffprobe` are bundled.
 

@@ -223,6 +223,21 @@ struct QueueRow: View {
                             Text("Gathering metadata…").font(.system(size: 11)).foregroundStyle(Theme.muted)
                         }
                     }
+                    if item.status == .queued, let launchAt = item.launchAt {
+                        // Deferred by the start-delay: show a live countdown to
+                        // the scheduled launch time. TimelineView ticks each
+                        // second so the number stays accurate.
+                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                            let remaining = launchAt.timeIntervalSince(ctx.date)
+                            HStack(spacing: 6) {
+                                Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(Theme.accent)
+                                Text(remaining > 0
+                                     ? "Starting in \(max(1, Int(ceil(remaining))))s"
+                                     : "Starting…")
+                                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.accent)
+                            }
+                        }
+                    }
                     if item.status == .failed && !item.errorMessage.isEmpty {
                         Text(item.errorMessage).font(.system(size: 10.5)).foregroundStyle(Theme.err).lineLimit(1)
                     }

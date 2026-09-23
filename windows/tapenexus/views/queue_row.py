@@ -248,11 +248,14 @@ class QueueRow(QWidget):
         self.spinner = QLabel("Preparing download…")
         self.spinner.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         self.spinner.hide()
+        self.countdown = QLabel("")
+        self.countdown.setStyleSheet(f"color: {theme.ACCENT}; font-family: Consolas; font-size: 11px;")
+        self.countdown.hide()
         self.err_label = QLabel("")
         self.err_label.setStyleSheet(f"color: {theme.ERR}; font-size: 10px;")
         self.bytes_label = QLabel("")
         self.bytes_label.setStyleSheet(f"color: {theme.MUTED}; font-family: Consolas; font-size: 10px;")
-        for w in (self.badge, self.fmt_chip, self.clip_chip, self.schedule_chip, self.progress, self.percent, self.spinner, self.err_label):
+        for w in (self.badge, self.fmt_chip, self.clip_chip, self.schedule_chip, self.progress, self.percent, self.spinner, self.countdown, self.err_label):
             self.status_row.addWidget(w)
         center.addLayout(self.status_row)
         center.addWidget(self.bytes_label)
@@ -396,6 +399,21 @@ class QueueRow(QWidget):
     def refresh(self, item: DownloadItem) -> None:
         self.item = item
         self.title.setText(item.display_title)
+
+    def update_countdown(self) -> None:
+        """Recompute the 'Starting in Ns' label from the item's scheduled fire
+        time. Called by MainWindow's tick timer while a deferred launch waits."""
+        it = self.item
+        if it.status != "queued" or it.launch_at_ts <= 0:
+            self.countdown.hide()
+            return
+        import time
+        remaining = it.launch_at_ts - time.time()
+        if remaining > 0:
+            self.countdown.setText(f"Starting in {max(1, int(remaining + 0.999))}s")
+        else:
+            self.countdown.setText("Starting…")
+        self.countdown.show()
         meta_parts = [item.host]
         if item.uploader:
             meta_parts.append(item.uploader)
@@ -435,6 +453,11 @@ class QueueRow(QWidget):
         self.progress.setVisible(downloading and item.total_bytes > 0)
         self.percent.setVisible(downloading)
         self.spinner.setVisible(item.status == "downloading" and item.total_bytes == 0)
+        # Countdown for a delay-deferred launch; the MainWindow tick timer
+        # calls update_countdown() each ~250ms to keep the number live.
+        self.countdown.setVisible(item.status == "queued" and item.launch_at_ts > 0)
+        if item.status == "queued" and item.launch_at_ts > 0:
+            self.update_countdown()
         if downloading:
             self.progress.setValue(int(item.progress * 1000))
             pct = int(item.progress * 100)

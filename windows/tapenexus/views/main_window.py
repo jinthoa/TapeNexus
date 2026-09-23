@@ -3,18 +3,19 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QIcon, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
     QPushButton, QButtonGroup, QScrollArea, QSizePolicy, QSystemTrayIcon,
-    QMenu, QMessageBox,
+    QMenu, QMessageBox, QDialog,
 )
 
 from ..models import extract_urls, looks_supported
 from . import theme
 from .queue_row import QueueRow
 from .settings_dialog import SettingsDialog
+from .update_dialog import UpdateDialog
 
 
 FILTERS = [("all", "All"), ("active", "Active"), ("done", "Done"), ("failed", "Failed")]
@@ -41,9 +42,22 @@ class MainWindow(QMainWindow):
         state.item_changed.connect(self._on_item_changed)
         state.skipped_changed.connect(self._on_skipped)
         state.settings_changed.connect(self._on_settings_changed)
+        state.app_update_available.connect(self._on_update_available)
+        state.app_update_done.connect(self._on_update_done)
         self._rebuild_list()
 
         self.setAcceptDrops(True)
+
+        # Tick the "Starting in Ns" countdown labels for delay-deferred items.
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.timeout.connect(self._tick_countdowns)
+        self._countdown_timer.start(250)
+
+    def _tick_countdowns(self) -> None:
+        for row in self.rows.values():
+            it = getattr(row, "item", None)
+            if it is not None and it.status == "queued" and it.launch_at_ts > 0:
+                row.update_countdown()
 
     # ── UI ──────────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
@@ -187,6 +201,22 @@ class MainWindow(QMainWindow):
 
     def _on_settings_changed(self) -> None:
         self._rebuild_list()
+
+    # ── app self-update popup ───────────────────────────────────────────────
+    def _on_update_available(self, latest_tag: str, exe_url: str) -> None:
+        dlg = UpdateDialog(latest_tag, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.state.install_app_update()
+            self.statusBar().showMessage("Downloading update…", 4000)
+
+    def _on_update_done(self, ok: bool, message: str) -> None:
+        from PySide6.QtWidgets import QApplication
+        if ok:
+            # The new .exe has been launched; quit this instance to hand over.
+            self.statusBar().showMessage(message, 4000)
+            QApplication.quit()
+        else:
+            QMessageBox.warning(self, "Update failed", message)
 
     # ── list rendering ──────────────────────────────────────────────────────
     def _rebuild_list(self) -> None:

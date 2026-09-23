@@ -67,6 +67,9 @@ struct DownloadItem: Identifiable, Codable, Hashable {
     /// True while a deferred (delay-staggered) launch is pending for this item,
     /// so pump() doesn't re-select it and inflate the stagger timing. Transient.
     var launchScheduled: Bool = false
+    /// When a deferred launch is scheduled to fire, for the "Starting in Ns"
+    /// countdown indicator. nil when no deferred launch is pending. Transient.
+    var launchAt: Date? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, url, title, uploader, thumbnailURL, durationStr, status,

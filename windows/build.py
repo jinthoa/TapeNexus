@@ -20,7 +20,15 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(ROOT, "tapenexus", "bin")
-VERSION = os.environ.get("TN_VERSION", "1.0.9").lstrip("vV")
+# Single source of truth for the runtime version is tapenexus.__version__;
+# CI overrides via TN_VERSION (set to the release tag). Default to the package
+# version so the two can't drift when building locally.
+try:
+    from tapenexus import __version__ as _PKG_VERSION
+    _DEFAULT_VERSION = _PKG_VERSION
+except Exception:
+    _DEFAULT_VERSION = "1.0.10"
+VERSION = os.environ.get("TN_VERSION", _DEFAULT_VERSION).lstrip("vV")
 
 
 def _download(url: str, dest: str) -> None:

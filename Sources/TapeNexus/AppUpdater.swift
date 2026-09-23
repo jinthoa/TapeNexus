@@ -17,12 +17,21 @@ struct AppUpdateStatus: Equatable {
 final class AppUpdater {
     static let repo = "jinthoa/TapeNexus"
     var onStatus: ((AppUpdateStatus) -> Void)?
+    /// Fired on a launch (`auto`) check when a newer release is found, so the
+    /// app can present a Skip / Download-and-install popup. (current, latest)
+    var onUpdateAvailable: ((_ current: String, _ latest: String) -> Void)?
+
+    /// Most recently fetched release, cached so the popup's "Download and
+    /// install" can act without re-fetching.
+    private var lastRelease: Release?
+    private var lastLatest: String = ""
 
     var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
     }
 
-    /// `auto = true` (launch): notify only if a newer release exists.
+    /// `auto = true` (launch): notify only if a newer release exists — and fire
+    /// `onUpdateAvailable` so the app can show a popup.
     /// `auto = false` (manual button): download the `.pkg` and open Installer.
     func check(auto: Bool) {
         report(.init(currentVersion: currentVersion, state: .checking,
@@ -35,6 +44,8 @@ final class AppUpdater {
                 return
             }
             let latest = release.tagName
+            self.lastRelease = release
+            self.lastLatest = latest
             guard self.isNewer(latest: latest, current: self.currentVersion) else {
                 self.report(.init(currentVersion: self.currentVersion, latestVersion: latest,
                                   state: .upToDate,
@@ -44,10 +55,22 @@ final class AppUpdater {
             if auto {
                 self.report(.init(currentVersion: self.currentVersion, latestVersion: latest,
                                   state: .idle,
-                                  message: "Tape Nexus \(latest) available — check Settings to install."))
+                                  message: "Tape Nexus \(latest) available."))
+                let cur = self.currentVersion
+                DispatchQueue.main.async { self.onUpdateAvailable?(cur, latest) }
                 return
             }
             self.downloadAndInstall(release: release, latest: latest)
+        }
+    }
+
+    /// Download the cached latest release's `.pkg` and open Installer. Falls
+    /// back to a full check if we don't have a cached release yet.
+    func downloadAndInstallLatest() {
+        if let release = lastRelease {
+            downloadAndInstall(release: release, latest: lastLatest)
+        } else {
+            check(auto: false)
         }
     }
 

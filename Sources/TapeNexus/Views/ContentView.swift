@@ -14,5 +14,18 @@ struct ContentView: View {
             .sheet(isPresented: $state.showSettings) {
                 SettingsSheet()
             }
+            .alert("Tape Nexus \(state.updateAlert?.latest ?? "") is available",
+                   isPresented: Binding(
+                       get: { state.updateAlert != nil },
+                       set: { if !$0 { state.skipUpdateAlert() } })) {
+                Button("Download and install", role: .none) { state.installUpdateNow() }
+                Button("Skip", role: .cancel) { state.skipUpdateAlert() }
+            } message: {
+                if let a = state.updateAlert {
+                    Text("You're running \(a.current). Download the new version and open the installer?")
+                } else {
+                    Text("")
+                }
+            }
     }
 }

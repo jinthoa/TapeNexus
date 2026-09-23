@@ -195,8 +195,9 @@ final class DownloadManager {
             } else {
                 // Mark pending so pump() skips this item while it waits —
                 // otherwise a re-pump (clipboard grab, completion) re-selects
-                // it and inflates the stagger timing.
-                state?.update(id) { $0.launchScheduled = true }
+                // it and inflates the stagger timing. Record the fire time so
+                // the row can show a "Starting in Ns" countdown.
+                state?.update(id) { $0.launchScheduled = true; $0.launchAt = when }
                 bgQueue.asyncAfter(deadline: .now() + delta) { [weak self] in
                     guard let self = self else { return }
                     DispatchQueue.main.async { self.launchIfStillQueued(id) }
@@ -213,8 +214,8 @@ final class DownloadManager {
     /// launch filled the slot while we waited).
     private func launchIfStillQueued(_ id: UUID) {
         guard let state = state else { return }
-        // Clear the pending flag whether or not we actually launch.
-        state.update(id) { $0.launchScheduled = false }
+        // Clear the pending flag + countdown whether or not we actually launch.
+        state.update(id) { $0.launchScheduled = false; $0.launchAt = nil }
         guard !state.isQuietHour,
               let it = state.item(id), it.status == .queued,
               state.items.filter({ $0.status == .downloading }).count < settings().maxConcurrent

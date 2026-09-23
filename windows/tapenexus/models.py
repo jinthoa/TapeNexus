@@ -102,6 +102,9 @@ class DownloadItem:
     # True while a deferred (delay-staggered) launch is pending, so pump()
     # doesn't re-select the item and inflate the stagger timing. Transient.
     launch_scheduled: bool = False
+    # Epoch seconds at which a deferred launch is scheduled to fire, for the
+    # "Starting in Ns" countdown. 0 = none. Transient.
+    launch_at_ts: float = 0.0
 
     @staticmethod
     def new(url: str, format_desc: str = "") -> "DownloadItem":
@@ -147,6 +150,7 @@ class DownloadItem:
         d = asdict(self)
         d.pop("pid", None)
         d.pop("launch_scheduled", None)
+        d.pop("launch_at_ts", None)
         return d
 
     @staticmethod

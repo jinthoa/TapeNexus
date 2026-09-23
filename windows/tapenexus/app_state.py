@@ -126,6 +126,11 @@ class AppState(QObject):
     list_changed = Signal()
     skipped_changed = Signal(int)
     settings_changed = Signal()
+    # App self-update: emitted on launch when a newer release is found
+    # (latest_tag, exe_asset_url); and when a download+relaunch finishes
+    # (ok, message).
+    app_update_available = Signal(str, str)
+    app_update_done = Signal(bool, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -180,6 +185,12 @@ class AppState(QObject):
 
         self._quiet_timer.start(60_000)
         QTimer.singleShot(1000, self._evaluate_quiet_hours)
+
+        # App self-update: a few seconds after launch, check GitHub for a newer
+        # release. If found, app_update_available fires and the UI offers a
+        # Skip / Download and install popup.
+        self._pending_update = None  # (latest_tag, exe_url) cached for the popup
+        QTimer.singleShot(3000, self._check_app_update)
 
     # ── persistence ─────────────────────────────────────────────────────────
     def _appdata_file(self, name: str) -> str:
@@ -452,8 +463,9 @@ class AppState(QObject):
             else:
                 # Mark pending so pump() skips this item while it waits —
                 # otherwise a re-pump (clipboard grab, completion) re-selects
-                # it and inflates the stagger timing.
-                self.update(it.id, launch_scheduled=True)
+                # it and inflates the stagger timing. Record the fire time so
+                # the row can show a "Starting in Ns" countdown.
+                self.update(it.id, launch_scheduled=True, launch_at_ts=when.timestamp())
                 iid = it.id
                 QTimer.singleShot(delta_ms, lambda iid=iid: self._launch_if_queued(iid))
             self._last_start_at = when
@@ -462,8 +474,8 @@ class AppState(QObject):
     def _launch_if_queued(self, item_id: str) -> None:
         """Launch one item only if still queued, not in quiet hours, and a slot
         is free. Guards against stale scheduled launches."""
-        # Clear the pending flag whether or not we actually launch.
-        self.update(item_id, launch_scheduled=False)
+        # Clear the pending flag + countdown whether or not we actually launch.
+        self.update(item_id, launch_scheduled=False, launch_at_ts=0.0)
         if self.is_quiet_hour():
             return
         it = self.item(item_id)
@@ -761,3 +773,31 @@ class AppState(QObject):
         n = len(self.filtered_items())
         self.filter = prev
         return n
+
+    # ── app self-update ──────────────────────────────────────────────────────
+    def _check_app_update(self) -> None:
+        """Launch-time check (background thread). Emits app_update_available
+        with (latest_tag, exe_url) when a newer release is found."""
+        from . import app_updater
+        def work():
+            result = app_updater.check_latest()
+            if result:
+                tag, url = result
+                QTimer.singleShot(0, lambda: self._on_update_available(tag, url))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_available(self, latest_tag: str, exe_url: str) -> None:
+        self._pending_update = (latest_tag, exe_url)
+        self.app_update_available.emit(latest_tag, exe_url)
+
+    def install_app_update(self) -> None:
+        """'Download and install' from the popup: download the new .exe and
+        relaunch it (background thread), then emit app_update_done."""
+        if not self._pending_update:
+            return
+        tag, url = self._pending_update
+        from . import app_updater
+        def work():
+            ok, msg = app_updater.download_and_relaunch(url, tag)
+            QTimer.singleShot(0, lambda: self.app_update_done.emit(ok, msg))
+        threading.Thread(target=work, daemon=True).start()

@@ -10,6 +10,10 @@ final class AppState: ObservableObject {
     @Published var showSettings: Bool = false
     @Published var updateStatus = UpdateStatus()
     @Published var appUpdateStatus = AppUpdateStatus()
+    /// Non-nil when the launch update check found a newer release and the
+    /// Skip / Download-and-install alert should be shown. Set back to nil to
+    /// dismiss (Skip or after starting the install).
+    @Published var updateAlert: (current: String, latest: String)?
     @Published var skippedCount: Int = 0
     @Published var lastLog: [UUID: [String]] = [:]
     @Published var pasteField: String = ""
@@ -68,13 +72,17 @@ final class AppState: ObservableObject {
         metaQueue.maxConcurrentOperationCount = max(1, settings.maxConcurrent)
         updater.onStatus = { [weak self] s in self?.updateStatus = s }
         appUpdater.onStatus = { [weak self] s in self?.appUpdateStatus = s }
+        // When the launch check finds a newer release, surface the popup.
+        appUpdater.onUpdateAvailable = { [weak self] current, latest in
+            self?.updateAlert = (current: current, latest: latest)
+        }
         // Touch the notifier singleton so it requests notification authorization
         // up front (the first real post happens on download completion).
         _ = Notifier.shared
 
-        // App self-update: a notify-only check a few seconds after launch so the
-        // user learns a newer Tape Nexus is on GitHub without anything auto-
-        // installing. The Settings button does the actual download + install.
+        // App self-update: a notify-only check a few seconds after launch. If a
+        // newer release is found, an alert offers Skip / Download and install;
+        // the Settings button does the same download + install on demand.
         DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [weak self] in
             DispatchQueue.main.async { self?.appUpdater.check(auto: true) }
         }
@@ -331,6 +339,16 @@ final class AppState: ObservableObject {
     /// Manual app self-update: checks GitHub and, if newer, downloads the .pkg
     /// and opens Installer (auto-launch checks are notify-only).
     func checkForAppUpdateNow() { appUpdater.check(auto: false) }
+
+    /// "Download and install" from the launch update popup: download the cached
+    /// latest release's .pkg and open Installer, then dismiss the popup.
+    func installUpdateNow() {
+        updateAlert = nil
+        appUpdater.downloadAndInstallLatest()
+    }
+
+    /// Skip the launch update popup for this session.
+    func skipUpdateAlert() { updateAlert = nil }
 
     /// The app's own version (CFBundleShortVersionString), for the Settings view.
     var appVersion: String { appUpdater.currentVersion }
