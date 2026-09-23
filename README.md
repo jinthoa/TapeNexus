@@ -44,11 +44,10 @@ A quick tour of what's in the box, including the recently added features:
 
 ### macOS
 1. Download **`TapeNexus-1.0.14.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
-2. Install it:
-   ```bash
-   sudo installer -pkg ~/Downloads/TapeNexus-1.0.14.pkg -target /
-   ```
-3. Launch from `/Applications` — it's signed and notarized, so Gatekeeper accepts it outright (double-click; no quarantine clear, no right-click → Open needed).
+2. **Double-click the `.pkg`** — the macOS Installer opens and walks you through it. It's signed with a Developer ID and notarized by Apple, so Gatekeeper lets it run with no warning, no right-click → Open, no `xattr` step.
+3. Launch from `/Applications`.
+
+   Prefer the terminal? `sudo installer -pkg ~/Downloads/TapeNexus-1.0.14.pkg -target /`
 
 ### Windows
 1. Download **`TapeNexus-<ver>-win64.exe`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest) — a single portable executable.
