@@ -27,7 +27,7 @@ try:
     from tapenexus import __version__ as _PKG_VERSION
     _DEFAULT_VERSION = _PKG_VERSION
 except Exception:
-    _DEFAULT_VERSION = "1.0.13"
+    _DEFAULT_VERSION = "1.0.14"
 VERSION = os.environ.get("TN_VERSION", _DEFAULT_VERSION).lstrip("vV")
 
 
