@@ -38,7 +38,7 @@ A quick tour of what's in the box, including the recently added features:
 - **Persistence** — queue survives restarts (stored in Application Support); resolved metadata is cached so re-copied links don't re-hit the network.
 - **Universal macOS build** — native on Apple Silicon and Intel; a Windows `.exe` ships from the same releases.
 
-> Personal-use build: ad-hoc signed, **not notarized** (no paid Developer ID). Install + clear quarantine once and you're set.
+> Signed with a Developer ID and **notarized** by Apple — Gatekeeper accepts it outright, no quarantine clear needed.
 
 ## Download & install
 
@@ -48,11 +48,7 @@ A quick tour of what's in the box, including the recently added features:
    ```bash
    sudo installer -pkg ~/Downloads/TapeNexus-1.0.13.pkg -target /
    ```
-3. Clear the Gatekeeper quarantine flag (one time — it's ad-hoc signed, not notarized):
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/TapeNexus.app
-   ```
-4. Launch from `/Applications` (right-click → **Open** the first time).
+3. Launch from `/Applications` — it's signed and notarized, so Gatekeeper accepts it outright (double-click; no quarantine clear, no right-click → Open needed).
 
 ### Windows
 1. Download **`TapeNexus-<ver>-win64.exe`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest) — a single portable executable.
@@ -141,6 +137,34 @@ Sources/TapeNexus/
 build.sh                    compile (arm64 + x86_64) → lipo → bundle → sign → .pkg
 ```
 
-## Notes / limitations (v1)
+## Notes / limitations
 
-- Not notarized → requires the one-time `xattr` quarantine clear (no paid Developer ID).
+- Windows build is unsigned → SmartScreen warns on first launch (click **More info → Run anyway**). The macOS build is signed with a Developer ID and notarized, so it installs with no quarantine dance.
+
+## How it compares
+
+Tape Nexus vs. the other yt-dlp GUIs on macOS (Sept 2026):
+
+| | **Tape Nexus** | **Stacher 7** | **Grabby** | **Downlink** | **Downie 4** |
+|---|---|---|---|---|---|
+| **Platform & type** | | | | | |
+| Type | Native AppKit/SwiftUI | Electron | Native SwiftUI | Native SwiftUI | Native (own extractors) |
+| Price | Free | Free (+Premium sub) | Free (GPL) | Free (MIT) | $19.99 |
+| yt-dlp based | ✅ | ✅ | ✅ | ✅ | ❌ own extractors (1000+ sites) |
+| macOS support | ✅ universal | ✅ ARM + Intel | ✅ macOS 26+ only | ✅ macOS 14+ | ✅ macOS 13+ |
+| Intel Mac support | ✅ | ✅ | ❌ Apple Silicon only | ❌ Apple Silicon only | ✅ |
+| Windows | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **Workflow** | | | | | |
+| Clipboard auto-grab (passive) | ✅ | paste only | paste | paste | paste/drag |
+| Format preview (`--list-formats`) | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Per-item scheduling | ✅ | ✅ (subscriptions) | ❌ | ❌ | ✅ |
+| Quiet hours | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Menu-bar mode | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **Auth & media** | | | | | |
+| Cookies from browser | ✅ | ✅ | ✅ | ❌ | ✅ |
+| SponsorBlock | ✅ | ❌ | ✅ | ❌ | ❌ |
+| App self-update | ✅ app + yt-dlp | ✅ | ✅ yt-dlp | ✅ yt-dlp | ✅ |
+| **Trust** | | | | | |
+| Signed + notarized | ✅ | ✅ | ✅ | ❌ | ✅ |
+
+Competitor details as of Sept 2026 — verify before republishing.

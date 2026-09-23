@@ -112,9 +112,34 @@ fi
 # minimal PkgInfo
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-# ── 4. Ad-hoc code sign (local use; not notarized) ───────────────────────────
-echo "▶ Code signing (ad-hoc)…"
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "  (codesign warning ignored)"
+# ── 4. Code sign ─────────────────────────────────────────────────────────────
+# Resolve Developer ID identities from the keychain. If the Developer ID
+# Application cert is present, sign for distribution (hardened runtime +
+# entitlements — required for notarization); otherwise fall back to an ad-hoc
+# sign so local/CI machines without the cert still produce a runnable app.
+APP_IDENTITY="$(security find-identity -v -p codesigning | grep -m1 'Developer ID Application:' | sed 's/.*"\(.*\)".*/\1/' || true)"
+INST_IDENTITY="$(security find-identity -v | grep -m1 'Developer ID Installer:' | sed 's/.*"\(.*\)".*/\1/' || true)"
+ENT="$RES/TapeNexus.entitlements"
+HELPER_ENT="$RES/TapeNexus.helper-entitlements"
+
+if [[ -n "$APP_IDENTITY" ]]; then
+  echo "▶ Code signing (Developer ID Application)…"
+  # Sign the bundled Mach-O helpers first (innermost-out). They are standalone
+  # third-party/frozen binaries, so they get hardened runtime + the permissive
+  # helper entitlements (unsigned-exec memory + disabled library validation).
+  for bin in yt-dlp ffmpeg ffprobe; do
+    codesign --force --options runtime --sign "$APP_IDENTITY" \
+      --entitlements "$HELPER_ENT" "$APP/Contents/Resources/bin/$bin"
+  done
+  # Sign the app bundle itself (no --deep: helpers are already signed above).
+  codesign --force --options runtime --sign "$APP_IDENTITY" \
+    --entitlements "$ENT" "$APP"
+  codesign --verify --strict --verbose=2 "$APP" 2>&1 | sed 's/^/  /'
+else
+  echo "▶ Code signing (ad-hoc — no Developer ID Application cert in keychain)…"
+  APP_IDENTITY="-"
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "  (codesign warning ignored)"
+fi
 
 # Register the bundle with LaunchServices + re-index Spotlight so the app
 # icon shows up in Spotlight/Finder search (LS caches per-path; force-refresh).
@@ -159,17 +184,78 @@ cat > "$DIST" <<XML
 </installer-gui-script>
 XML
 
-productbuild --distribution "$DIST" --package-path "$BUILD" "$BUILD/TapeNexus-$VERSION.pkg"
+PKG="$BUILD/TapeNexus-$VERSION.pkg"
+if [[ -n "$INST_IDENTITY" ]]; then
+  echo "  signing .pkg with Developer ID Installer…"
+  productbuild --distribution "$DIST" --package-path "$BUILD" --sign "$INST_IDENTITY" "$PKG"
+else
+  productbuild --distribution "$DIST" --package-path "$BUILD" "$PKG"
+fi
 
 rm -rf "$PAYLOAD"
 rm -f "$COMPONENT_PKG"
 
+# ── 6. Notarize + staple (opt-in via --notarize) ─────────────────────────────
+# Notarization submits the signed .pkg to Apple, waits for approval, then
+# staples the notarization ticket so Gatekeeper accepts it with no quarantine
+# dance. Gated behind --notarize so plain `./build.sh` stays a fast signed build
+# for local testing. Auth credentials live in ~/.tapenexus/notary.env (never in
+# the repo); build.sh supports EITHER an App Store Connect API key (TN_KEY,
+# TN_KEY_ID, TN_ISSUER) OR an Apple ID + app-specific password (TN_APPLE_ID,
+# TN_APP_PASSWORD). Team ID is required for both.
+NOTARIZE=0
+for arg in "$@"; do [[ "$arg" == "--notarize" ]] && NOTARIZE=1; done
+
+NOTARIZED=0
+if [[ "$NOTARIZE" -eq 1 ]]; then
+  NOTARY_ENV="$HOME/.tapenexus/notary.env"
+  if [[ ! -f "$NOTARY_ENV" ]]; then
+    echo "✖ --notarize given but $NOTARY_ENV not found." >&2
+    echo "  Put TN_APPLE_ID / TN_APP_PASSWORD / TN_TEAM_ID (or TN_KEY / TN_KEY_ID / TN_ISSUER / TN_TEAM_ID) in it." >&2
+    exit 1
+  fi
+  set -a; . "$NOTARY_ENV"; set +a
+  if [[ -z "${TN_TEAM_ID:-}" ]]; then
+    echo "✖ TN_TEAM_ID missing in $NOTARY_ENV." >&2; exit 1
+  fi
+  # Store (or refresh) notarytool credentials in the keychain under a profile.
+  echo "▶ Storing notarytool credentials in keychain…"
+  if [[ -n "${TN_KEY:-}" && -n "${TN_KEY_ID:-}" && -n "${TN_ISSUER:-}" ]]; then
+    # App Store Connect API key flow. --team-id must NOT be passed here: it
+    # belongs to the app-specific-password flow, and mixing it with --key makes
+    # notarytool refuse with "cannot store both credential types". The team is
+    # implied by the API key + issuer.
+    xcrun notarytool store-credentials "TN-NOTARY" \
+      --key "$TN_KEY" --key-id "$TN_KEY_ID" --issuer "$TN_ISSUER"
+  elif [[ -n "${TN_APPLE_ID:-}" && -n "${TN_APP_PASSWORD:-}" ]]; then
+    xcrun notarytool store-credentials "TN-NOTARY" \
+      --apple-id "$TN_APPLE_ID" --team-id "$TN_TEAM_ID" --password "$TN_APP_PASSWORD"
+  else
+    echo "✖ $NOTARY_ENV has neither an API key nor an Apple ID + app password." >&2
+    exit 1
+  fi
+  echo "▶ Submitting $PKG to Apple notarization (waits for approval, usually 2–10 min)…"
+  xcrun notarytool submit "$PKG" --keychain-profile "TN-NOTARY" --wait
+  echo "▶ Stapling notarization ticket…"
+  xcrun stapler staple "$PKG"
+  xcrun stapler validate "$PKG"
+  echo "▶ Gatekeeper check…"
+  spctl -a -t install "$PKG" && echo "  Gatekeeper: accepted" || echo "  (spctl check could not confirm — inspect with `spctl -a -t install -v \"$PKG\"`)"
+  NOTARIZED=1
+fi
+
 echo
 echo "✔ Done."
 echo "  App:  $APP"
-echo "  Pkg:  $BUILD/TapeNexus-$VERSION.pkg"
+echo "  Pkg:  $PKG"
 echo
 echo "  Run dev:  \"$APP/Contents/MacOS/TapeNexus\""
 echo
-echo "  Note: unsigned/ad-hoc. To open after install, right-click → Open, or:"
-echo "    xattr -dr com.apple.quarantine /Applications/TapeNexus.app"
+if [[ "$NOTARIZED" -eq 1 ]]; then
+  echo "  Signed with Developer ID + notarized + stapled. Gatekeeper accepts it outright."
+elif [[ "$APP_IDENTITY" != "-" ]]; then
+  echo "  Signed with Developer ID (not notarized). Pass --notarize to submit to Apple."
+else
+  echo "  Note: unsigned/ad-hoc. To open after install, right-click → Open, or:"
+  echo "    xattr -dr com.apple.quarantine /Applications/TapeNexus.app"
+fi
