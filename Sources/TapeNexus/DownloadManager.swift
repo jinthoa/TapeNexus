@@ -20,6 +20,13 @@ final class DownloadManager {
     /// the source site in a burst.
     private var lastStartAt: Date?
 
+    /// Number of immediate (undelayed) launches still budgeted in the current
+    /// start wave. Primed to `maxConcurrent` by `startAll()` / `retryAll()` so
+    /// the first cap's worth of downloads launch together — filling the
+    /// concurrency limit at once instead of staggering by the start delay —
+    /// while refills as slots free space out by `downloadDelaySeconds`.
+    private var burstRemaining: Int = 0
+
     /// Called whenever queue changes; starts queued items up to the limit.
     func pump() {
         guard let state = state else { return }
@@ -36,9 +43,11 @@ final class DownloadManager {
     }
 
     /// Start every queued item, respecting concurrency + the start delay.
-    /// Launches up to `maxConcurrent` now (staggered); the rest stay queued
-    /// and are launched by `pump()` as slots free.
+    /// The first `maxConcurrent` launch simultaneously (filling the cap at
+    /// once); the rest stay queued and are launched by `pump()` as slots free,
+    /// spaced out by `downloadDelaySeconds`.
     func startAll() {
+        burstRemaining = settings().maxConcurrent
         pump()
     }
 
@@ -150,9 +159,11 @@ final class DownloadManager {
         pump()
     }
 
-    /// Re-queue every failed (and stopped) item in one go.
+    /// Re-queue every failed (and stopped) item in one go. Like `startAll`,
+    /// primes the burst so the first `maxConcurrent` retry together.
     func retryAll() {
         guard let state = state else { return }
+        burstRemaining = settings().maxConcurrent
         let ids = state.items.filter { $0.status == .failed || $0.status == .stopped }.map { $0.id }
         for id in ids { retry(id) }
     }
@@ -174,8 +185,10 @@ final class DownloadManager {
 
     /// Stagger launches by `downloadDelaySeconds` so a big queue or a run of
     /// rapid completions doesn't reach the source site in a burst. The first
-    /// available launch goes immediately; later ones wait so successive starts
-    /// are at least `delay` apart. Each launch re-checks status / quiet hours /
+    /// `maxConcurrent` launches of a start wave (primed by `startAll` /
+    /// `retryAll`) go immediately so the concurrency cap fills at once; once
+    /// that burst budget is spent, later launches wait so successive starts are
+    /// at least `delay` apart. Each launch re-checks status / quiet hours /
     /// free slots at fire time, so a stop or quiet window during the wait is
     /// honored rather than overridden.
     private func scheduleStarts(_ items: [DownloadItem]) {
@@ -188,7 +201,12 @@ final class DownloadManager {
         }
         for item in items {
             let id = item.id
-            let when = fireAt
+            // Consume the burst budget first: these launches go immediately so
+            // the first cap's worth of downloads start together. Once the
+            // budget is exhausted, fall back to the staggered fire time.
+            let immediate = burstRemaining > 0
+            if immediate { burstRemaining -= 1 }
+            let when = immediate ? now : fireAt
             let delta = when.timeIntervalSince(now)
             if delta <= 0 {
                 launchIfStillQueued(id)
@@ -204,7 +222,12 @@ final class DownloadManager {
                 }
             }
             lastStartAt = when
-            fireAt = fireAt.addingTimeInterval(TimeInterval(delay))
+            // Only advance the stagger fire time for launches that actually
+            // used it — immediate launches shouldn't push the next staggered
+            // launch further out.
+            if !immediate {
+                fireAt = fireAt.addingTimeInterval(TimeInterval(delay))
+            }
         }
     }
 

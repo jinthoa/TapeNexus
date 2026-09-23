@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag to build for (e.g. v1.0.10). Defaults to the pushed tag, or v1.0.10 on manual run."
+        description: "Release tag to build for (e.g. v1.0.11). Defaults to the pushed tag, or v1.0.11 on manual run."
         required: false
 
 permissions:
@@ -31,7 +31,7 @@ jobs:
         id: ver
         shell: bash
         run: |
-          # On a tag push github.ref_name is "v1.0.10". On a manual dispatch it's
+          # On a tag push github.ref_name is "v1.0.11". On a manual dispatch it's
           # the branch name ("main"), so fall back to the input then a default.
           v="${{ github.event.inputs.version }}"
           if [ -z "$v" ]; then v="${{ github.ref_name }}"; fi
@@ -62,7 +62,7 @@ jobs:
         working-directory: windows
         run: |
           $tag = $env:TN_VERSION
-          if (-not $tag -or $tag -eq "v") { $tag = "v1.0.10" }
+          if (-not $tag -or $tag -eq "v") { $tag = "v1.0.11" }
           # Create the release if it doesn't already exist; ignore the error if it does.
           gh release create $tag --title "Tape Nexus $tag" --notes "Tape Nexus $tag" 2>$null
           if ($LASTEXITCODE -ne 0) { Write-Host "release $tag already exists" }

@@ -161,6 +161,11 @@ class AppState(QObject):
         # Timestamp of the most recently scheduled launch, for staggering
         # starts by download_delay_seconds.
         self._last_start_at = None
+        # Immediate (undelayed) launches still budgeted in the current start
+        # wave. Primed to max_concurrent by start_all()/retry_all() so the
+        # first cap's worth of downloads launch together; refills then space
+        # out by download_delay_seconds. Transient — not persisted.
+        self._burst_remaining = 0
         # Item ids that already retried once without browser cookies after a
         # cookies-read failure, so we don't loop. Transient — not persisted.
         self._cookies_retried: set = set()
@@ -445,9 +450,12 @@ class AppState(QObject):
 
     def _schedule_starts(self, items: List[DownloadItem]) -> None:
         """Stagger launches by download_delay_seconds so a big queue or rapid
-        completions don't hit the source site in a burst. First launch goes
-        immediately; later ones wait so successive starts are at least `delay`
-        apart. Each launch re-checks status/quiet/slots at fire time."""
+        completions don't hit the source site in a burst. The first
+        max_concurrent launches of a start wave (primed by start_all() /
+        retry_all()) go immediately so the concurrency cap fills at once; once
+        that burst budget is spent, later launches wait so successive starts
+        are at least `delay` apart. Each launch re-checks status/quiet/slots at
+        fire time."""
         if not items:
             return
         delay = self.settings.download_delay_seconds
@@ -456,7 +464,13 @@ class AppState(QObject):
         if delay > 0 and self._last_start_at is not None:
             fire_at = max(now, self._last_start_at + timedelta(seconds=delay))
         for it in items:
-            when = fire_at
+            # Consume the burst budget first: these launches go immediately so
+            # the first cap's worth of downloads start together. Once the
+            # budget is exhausted, fall back to the staggered fire time.
+            immediate = self._burst_remaining > 0
+            if immediate:
+                self._burst_remaining -= 1
+            when = now if immediate else fire_at
             delta_ms = int((when - now).total_seconds() * 1000) if delay > 0 else 0
             if delta_ms <= 0:
                 self._launch_if_queued(it.id)
@@ -469,7 +483,11 @@ class AppState(QObject):
                 iid = it.id
                 QTimer.singleShot(delta_ms, lambda iid=iid: self._launch_if_queued(iid))
             self._last_start_at = when
-            fire_at = fire_at + timedelta(seconds=delay)
+            # Only advance the stagger fire time for launches that actually
+            # used it — immediate launches shouldn't push the next staggered
+            # launch further out.
+            if not immediate:
+                fire_at = fire_at + timedelta(seconds=delay)
 
     def _launch_if_queued(self, item_id: str) -> None:
         """Launch one item only if still queued, not in quiet hours, and a slot
@@ -488,8 +506,10 @@ class AppState(QObject):
 
     def start_all(self) -> None:
         """Start every queued item, respecting concurrency + the start delay.
-        Launches up to max_concurrent now (staggered); the rest stay queued
-        and are launched by pump() as slots free."""
+        The first max_concurrent launch simultaneously (filling the cap at
+        once); the rest stay queued and are launched by pump() as slots free,
+        spaced out by download_delay_seconds."""
+        self._burst_remaining = self.settings.max_concurrent
         self.pump()
 
     # ── download lifecycle ──────────────────────────────────────────────────
@@ -629,7 +649,9 @@ class AppState(QObject):
         self._persist_queue()
 
     def retry_all(self) -> None:
-        """Re-queue every failed (and stopped) item in one go."""
+        """Re-queue every failed (and stopped) item in one go. Like start_all,
+        primes the burst so the first max_concurrent retry together."""
+        self._burst_remaining = self.settings.max_concurrent
         for it in list(self.items):
             if it.status in ("failed", "stopped"):
                 self.retry(it.id)
