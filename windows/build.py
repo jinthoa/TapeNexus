@@ -27,7 +27,7 @@ try:
     from tapenexus import __version__ as _PKG_VERSION
     _DEFAULT_VERSION = _PKG_VERSION
 except Exception:
-    _DEFAULT_VERSION = "1.0.15"
+    _DEFAULT_VERSION = "1.0.16"
 VERSION = os.environ.get("TN_VERSION", _DEFAULT_VERSION).lstrip("vV")
 
 
@@ -75,6 +75,12 @@ def build() -> None:
         # relative --add-data sources against the spec dir (build_tmp), not
         # CWD, so a relative "tapenexus/bin" would not be found.
         "--add-data", os.path.join(ROOT, "tapenexus", "bin") + sep + "bin",
+        # Cloud-sync config (Supabase URL + publishable key). The committed
+        # sync.json is an empty template; bake in gitignored sync.local.json
+        # if present so the key ships but never enters the repo.
+        "--add-data", os.path.join(ROOT, "tapenexus",
+                                   "sync.local.json" if os.path.exists(os.path.join(ROOT, "tapenexus", "sync.local.json"))
+                                   else "sync.json") + sep + ".",
         "--collect-all", "PySide6",
         "--hidden-import", "PySide6.QtNetwork",
         "--hidden-import", "PySide6.QtWidgets",

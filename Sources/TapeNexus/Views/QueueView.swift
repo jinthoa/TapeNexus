@@ -47,6 +47,13 @@ struct QueueView: View {
             IconButton(system: "gearshape", help: "Settings…  (⌘,)", tint: Theme.muted) {
                 state.showSettings = true
             }
+
+            // Top-right account control: "Sign in" button when signed out,
+            // avatar (→ achievements + sign out) when signed in. Hidden when
+            // cloud sync isn't configured.
+            if let sync = state.sync {
+                AccountControl(sync: sync, achievements: state.achievements)
+            }
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
     }
@@ -397,6 +404,12 @@ struct QueueRow: View {
                     clipButton
                     scheduleButton
                     IconButton(system: "play.fill", help: "Start now", tint: Theme.ok) { state.startNow(item.id) }
+                    // When a start is deferred (delay countdown) or scheduled,
+                    // offer a Stop to cancel it and park the item as stopped —
+                    // otherwise only Start now / Remove are available.
+                    if item.launchAt != nil || item.hasSchedule {
+                        IconButton(system: "stop.fill", help: "Cancel scheduled start", tint: Theme.err) { state.cancelStart(item.id) }
+                    }
                     IconButton(system: "xmark", help: "Remove", tint: Theme.err) { state.remove(item.id) }
                 case .failed, .stopped:
                     IconButton(system: "arrow.clockwise", help: "Retry", tint: Theme.ok) { state.retry(item.id) }
@@ -410,8 +423,23 @@ struct QueueRow: View {
                     IconButton(system: "trash", help: "Delete file", tint: Theme.err) { state.deleteFile(item.id) }
                     IconButton(system: "xmark", help: "Remove from list", tint: Theme.muted) { state.remove(item.id) }
                 }
+                // Source-link actions — available in every status.
+                Divider().frame(height: 18).overlay(Theme.line)
+                IconButton(system: "doc.on.clipboard", help: "Copy URL", tint: Theme.muted) { copyURL() }
+                IconButton(system: "arrow.up.right.square", help: "Open in browser", tint: Theme.muted) { openInBrowser() }
             }
         }
+    }
+
+    /// Copy the item's source URL to the pasteboard.
+    private func copyURL() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(item.url, forType: .string)
+    }
+
+    /// Open the item's source URL in the user's default browser.
+    private func openInBrowser() {
+        if let url = URL(string: item.url) { NSWorkspace.shared.open(url) }
     }
 }
 

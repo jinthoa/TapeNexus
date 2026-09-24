@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from PySide6.QtCore import Qt, QUrl, QSize
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QGuiApplication, QDesktopServices
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from PySide6.QtWidgets import (
     QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QProgressBar,
@@ -345,6 +345,14 @@ class QueueRow(QWidget):
             s, e = dlg.values()
             self.state.set_item_clip(self.item.id, s, e)
 
+    def _copy_url(self) -> None:
+        """Copy the item's source URL to the system clipboard."""
+        QGuiApplication.clipboard().setText(self.item.url)
+
+    def _open_in_browser(self) -> None:
+        """Open the item's source URL in the user's default browser."""
+        QDesktopServices.openUrl(QUrl(self.item.url))
+
     # ── buttons ─────────────────────────────────────────────────────────────
     def _btn(self, text, tip, color, handler) -> QPushButton:
         b = QPushButton(text)
@@ -386,6 +394,11 @@ class QueueRow(QWidget):
             self.button_row.addWidget(self._btn("↻", "Retry", theme.TEXT, lambda: self.state.retry(self.item.id)))
         elif st == "queued":
             self.button_row.addWidget(self._btn("▶", "Start now", theme.OK, lambda: self.state.start_now(self.item.id)))
+            # When a start is deferred (delay countdown) or scheduled, offer a
+            # Stop to cancel it and park the item as stopped — otherwise only
+            # Start now / Remove are available.
+            if self.item.launch_at_ts > 0 or self.item.has_schedule:
+                self.button_row.addWidget(self._btn("⏹", "Cancel scheduled start", theme.ERR, lambda: self.state.cancel_start(self.item.id)))
             self.button_row.addWidget(self._btn("✕", "Remove", theme.ERR, lambda: self.state.remove(self.item.id)))
         elif st in ("failed", "stopped"):
             self.button_row.addWidget(self._btn("↻", "Retry", theme.OK, lambda: self.state.retry(self.item.id)))
@@ -397,6 +410,9 @@ class QueueRow(QWidget):
             self.button_row.addWidget(self._btn("📁", "Reveal", theme.ACCENT2, lambda: self.state.reveal(self.item.id)))
             self.button_row.addWidget(self._btn("🗑", "Delete file", theme.ERR, lambda: self.state.delete_file(self.item.id)))
             self.button_row.addWidget(self._btn("✕", "Remove", theme.MUTED, lambda: self.state.remove(self.item.id)))
+        # Source-link actions — always available regardless of status.
+        self.button_row.addWidget(self._btn("🔗", "Copy URL", theme.MUTED, self._copy_url))
+        self.button_row.addWidget(self._btn("↗", "Open in browser", theme.MUTED, self._open_in_browser))
 
     # ── refresh from model ──────────────────────────────────────────────────
     def refresh(self, item: DownloadItem) -> None:

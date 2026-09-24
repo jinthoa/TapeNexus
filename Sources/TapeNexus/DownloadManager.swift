@@ -145,6 +145,25 @@ final class DownloadManager {
                         title: ok ? "Download complete" : "Download failed",
                         body: it.displayTitle)
                 }
+                // Achievements: tally completed downloads + bytes locally (always,
+                // so progress is never lost), but only surface unlock notifications
+                // + sync when the user is signed in — achievements are an account
+                // feature now. Badges earned while signed out still unlock locally
+                // and appear (and sync) once the user signs in.
+                if let it = finished2, it.status == .done {
+                    let unlocked = state.achievements.recordCompletion(totalBytes: it.totalBytes)
+                    let signedIn = state.sync?.isSignedIn ?? false
+                    if signedIn {
+                        for a in unlocked {
+                            Notifier.shared.post(
+                                title: "🏆 Achievement unlocked",
+                                body: "\(a.title) — \(a.subtitle)")
+                        }
+                        if let sync = state.sync {
+                            Task { await sync.pushAchievements(state.achievements.stats) }
+                        }
+                    }
+                }
                 state.refreshBadge()
                 self.pump()
             })
@@ -236,6 +255,10 @@ final class DownloadManager {
     /// at least `delay` apart. Each launch re-checks status / quiet hours /
     /// free slots at fire time, so a stop or quiet window during the wait is
     /// honored rather than overridden.
+    /// Per-item nonces for deferred launches; `cancelStart` rotates a token so
+    /// a pending `asyncAfter` knows it was cancelled and skips the launch.
+    private var launchTokens: [UUID: UUID] = [:]
+
     private func scheduleStarts(_ items: [DownloadItem]) {
         guard !items.isEmpty else { return }
         let delay = settings().downloadDelaySeconds
@@ -260,10 +283,18 @@ final class DownloadManager {
                 // otherwise a re-pump (clipboard grab, completion) re-selects
                 // it and inflates the stagger timing. Record the fire time so
                 // the row can show a "Starting in Ns" countdown.
+                let token = UUID()
+                launchTokens[id] = token
                 state?.update(id) { $0.launchScheduled = true; $0.launchAt = when }
                 bgQueue.asyncAfter(deadline: .now() + delta) { [weak self] in
                     guard let self = self else { return }
-                    DispatchQueue.main.async { self.launchIfStillQueued(id) }
+                    DispatchQueue.main.async {
+                        // Skip if the launch was cancelled (or superseded) while
+                        // we waited — cancelStart rotates the token.
+                        guard self.launchTokens[id] == token else { return }
+                        self.launchTokens.removeValue(forKey: id)
+                        self.launchIfStillQueued(id)
+                    }
                 }
             }
             lastStartAt = when
@@ -300,6 +331,23 @@ final class DownloadManager {
         let running = state.items.filter { $0.status == .downloading }.count
         guard running < settings().maxConcurrent else { return }
         scheduleStarts([item])
+    }
+
+    /// Cancel a queued item's pending start — a deferred (delay-staggered)
+    /// launch countdown or a future `startAt` schedule — and park it as
+    /// stopped so pump() won't re-select and re-defer it. The pending
+    /// asyncAfter is neutralized via the launch token. Retry re-queues it.
+    func cancelStart(_ id: UUID) {
+        guard let state = state, let item = state.item(id), item.status == .queued else { return }
+        launchTokens.removeValue(forKey: id)
+        state.update(id) {
+            $0.status = .stopped
+            $0.launchScheduled = false
+            $0.launchAt = nil
+            $0.startAt = nil
+        }
+        state.persist()
+        state.refreshBadge()
     }
 
     func pauseAll() {

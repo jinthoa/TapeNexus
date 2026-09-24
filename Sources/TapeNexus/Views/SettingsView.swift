@@ -67,9 +67,21 @@ struct SettingsSheet: View {
                                     ForEach(AppSettings.convertFormats, id: \.self) { f in Text(f).tag(f) }
                                 }.pickerStyle(.menu).frame(width: 220)
                             }
+                            if draft.transcodeEnabled {
+                                row("Video codec") {
+                                    Picker("", selection: $draft.transcodeVideoCodec) {
+                                        ForEach(AppSettings.transcodeVideoCodecs, id: \.key) { c in Text(c.label).tag(c.key) }
+                                    }.pickerStyle(.menu).frame(width: 220)
+                                }
+                                row("Audio codec") {
+                                    Picker("", selection: $draft.transcodeAudioCodec) {
+                                        ForEach(AppSettings.transcodeAudioCodecs, id: \.key) { c in Text(c.label).tag(c.key) }
+                                    }.pickerStyle(.menu).frame(width: 220)
+                                }
+                            }
                             Text(draft.transcodeEnabled
-                                 ? "Re-encodes the downloaded video into the chosen container. Slower and slightly lossy, but works for any source→target combination. Applies to video presets only."
-                                 : "Repackages the streams into a new container with no re-encode — fast and lossless, but only works when the source codecs are valid in the target container.")
+                                 ? "Re-encodes the downloaded video into the chosen container with the selected codecs (Default lets ffmpeg pick). Slower and slightly lossy, but works for any source→target combination. Applies to video presets only."
+                                 : "Repackages the streams into a new container with no re-encode — fast and lossless, but only works when the source codecs are valid in the target container. Codec choice doesn't apply to remux (it keeps the source codecs).")
                                 .font(.system(size: 11)).foregroundStyle(Theme.muted)
                         }
                         row("Concurrent downloads") {
@@ -262,3 +274,4 @@ struct SettingsSheet: View {
         Toggle(label, isOn: isOn).font(.system(size: 12.5)).tint(Theme.accent)
     }
 }
+

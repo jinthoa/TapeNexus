@@ -33,6 +33,25 @@ FORMAT_PRESETS: List[tuple] = [
 # bundled ffmpeg (yt-dlp --remux-video / --recode-video).
 CONVERT_FORMATS = ["mp4", "mkv", "webm", "avi", "mov", "flv"]
 
+# Codec overrides for transcode (re-encode) only — remux preserves source
+# codecs. (key, label); "default" omits -c:v / -c:a so ffmpeg picks for the
+# target container.
+TRANSCODE_VIDEO_CODECS = [
+    ("default", "Default"),
+    ("libx264", "H.264"),
+    ("libx265", "H.265 (HEVC)"),
+    ("libvpx-vp9", "VP9"),
+    ("libaom-av1", "AV1"),
+]
+TRANSCODE_AUDIO_CODECS = [
+    ("default", "Default"),
+    ("aac", "AAC"),
+    ("libopus", "Opus"),
+    ("libmp3lame", "MP3"),
+    ("flac", "FLAC"),
+    ("libvorbis", "Vorbis"),
+]
+
 COOKIE_BROWSERS = [
     ("", "None"),
     ("chrome", "Chrome"),
@@ -199,6 +218,9 @@ class AppSettings:
     remux_enabled: bool = False
     transcode_enabled: bool = False
     convert_format: str = "mp4"
+    # Codec overrides apply ONLY to transcode (re-encode), not remux.
+    transcode_video_codec: str = "default"
+    transcode_audio_codec: str = "default"
 
     @staticmethod
     def default() -> "AppSettings":

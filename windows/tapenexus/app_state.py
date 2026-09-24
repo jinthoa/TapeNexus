@@ -16,11 +16,13 @@ from typing import Dict, List, Optional
 import psutil
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
+from .achievements import Achievement, AchievementsManager
 from .clipboard_monitor import ClipboardMonitor
 from .models import (
     AppSettings, DownloadItem, FormatInfo, extract_urls, format_label,
     looks_like_playlist,
 )
+from .sync_manager import SyncManager
 from .yt_dlp_controller import YTDLPController
 
 APP_NAME = "TapeNexus"
@@ -140,6 +142,10 @@ class AppState(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.yt = YTDLPController()
+        # Local download stats + unlocked badges (fun; per-machine for now).
+        self.achievements = AchievementsManager(_appdata_dir())
+        # Optional cloud sync (Supabase). Stays local-only when unconfigured.
+        self.sync = SyncManager(_appdata_dir())
         self.clipboard = ClipboardMonitor()
         self.items: List[DownloadItem] = []
         self.settings = AppSettings.default()
@@ -174,6 +180,10 @@ class AppState(QObject):
         # Item ids that already retried once without browser cookies after a
         # cookies-read failure, so we don't loop. Transient — not persisted.
         self._cookies_retried: set = set()
+        # Per-item nonces for deferred launches; cancel_start drops/rotates a
+        # token so a pending QTimer.singleShot knows it was cancelled and skips
+        # the launch. Transient — not persisted.
+        self._launch_tokens: Dict[str, object] = {}
 
         self._load()
         self._meta_pool = ThreadPoolExecutor(
@@ -192,6 +202,12 @@ class AppState(QObject):
         # kick off anything queued from a previous session
         if self.settings.auto_start_downloads:
             QTimer.singleShot(500, self.pump)
+
+        # If cloud sync is configured and we have a saved session, pull the
+        # server achievements row and merge it into local (so badges earned on
+        # another machine appear here), then push the merged snapshot back.
+        if self.sync.is_configured and self.sync.is_signed_in:
+            self.sync.pull_and_merge(self.achievements)
 
         self._quiet_timer.start(60_000)
         QTimer.singleShot(1000, self._evaluate_quiet_hours)
@@ -486,7 +502,12 @@ class AppState(QObject):
                 # the row can show a "Starting in Ns" countdown.
                 self.update(it.id, launch_scheduled=True, launch_at_ts=when.timestamp())
                 iid = it.id
-                QTimer.singleShot(delta_ms, lambda iid=iid: self._launch_if_queued(iid))
+                token = object()
+                self._launch_tokens[iid] = token
+                # The callback checks the token before firing so cancel_start
+                # (which drops/rotates it) neutralizes a pending countdown.
+                QTimer.singleShot(delta_ms, lambda iid=iid, token=token:
+                                   self._launch_if_queued(iid, token))
             self._last_start_at = when
             # Only advance the stagger fire time for launches that actually
             # used it — immediate launches shouldn't push the next staggered
@@ -494,9 +515,15 @@ class AppState(QObject):
             if not immediate:
                 fire_at = fire_at + timedelta(seconds=delay)
 
-    def _launch_if_queued(self, item_id: str) -> None:
+    def _launch_if_queued(self, item_id: str, token: object = None) -> None:
         """Launch one item only if still queued, not in quiet hours, and a slot
         is free. Guards against stale scheduled launches."""
+        # If a token was given, skip if the launch was cancelled (or superseded)
+        # while we waited — cancel_start drops/rotates the token.
+        if token is not None:
+            if self._launch_tokens.get(item_id) is not token:
+                return
+            self._launch_tokens.pop(item_id, None)
         # Clear the pending flag + countdown whether or not we actually launch.
         self.update(item_id, launch_scheduled=False, launch_at_ts=0.0)
         if self.is_quiet_hour():
@@ -564,7 +591,16 @@ class AppState(QObject):
             self.update(item_id, status="done", progress=1.0, error_message="",
                         pid=0, retry_count=0)
             self._persist_queue()
+            # Achievements: tally completed downloads + bytes locally (always,
+            # so progress is never lost), but only surface unlock notifications
+            # + sync when signed in — achievements are an account feature now.
+            # Badges earned while signed out still unlock locally and appear
+            # (and sync) once the user signs in.
+            unlocked = self.achievements.record_completion(it.total_bytes)
+            if self.sync.is_signed_in:
+                self.sync.push_achievements(self.achievements.stats)
         else:
+            unlocked = []
             if it.status == "downloading":
                 self.update(item_id, status="failed", error_message=err, pid=0)
         self._workers.pop(item_id, None)
@@ -588,6 +624,12 @@ class AppState(QObject):
         if finished_it and self.settings.notify_on_complete and self._tray:
             title = "Download complete" if ok else "Download failed"
             self._tray.showMessage(title, finished_it.display_title)
+            # Achievement unlock notifications are an account feature — only
+            # surface them when the user is signed in.
+            if self.sync.is_signed_in:
+                for a in unlocked:
+                    self._tray.showMessage("🏆 Achievement unlocked",
+                                           f"{a.title} — {a.subtitle}")
         self.pump()
 
     # ── controls ────────────────────────────────────────────────────────────
@@ -630,6 +672,19 @@ class AppState(QObject):
                 except OSError:
                     pass
         self.update(item_id, status="stopped", pid=0)
+        self._persist_queue()
+
+    def cancel_start(self, item_id: str) -> None:
+        """Cancel a queued item's pending start — a deferred (delay-staggered)
+        launch countdown or a future start_at schedule — and park it as
+        stopped so pump() won't re-select and re-defer it. The pending
+        QTimer is neutralized via the launch token. Retry re-queues it."""
+        it = self.item(item_id)
+        if not it or it.status != "queued":
+            return
+        self._launch_tokens.pop(item_id, None)
+        self.update(item_id, status="stopped", launch_scheduled=False,
+                    launch_at_ts=0.0, start_at="")
         self._persist_queue()
 
     def retry(self, item_id: str) -> None:

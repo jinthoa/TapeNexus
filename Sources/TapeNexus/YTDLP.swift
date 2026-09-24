@@ -433,6 +433,16 @@ final class YTDLPController: @unchecked Sendable {
             // merge container to match so yt-dlp doesn't remux twice.
             let fmt = settings.convertFormat.isEmpty ? "mp4" : settings.convertFormat
             args += ["--recode-video", fmt, "--merge-output-format", fmt]
+            // Optional codec override: pass -c:v / -c:a to the VideoConvertor's
+            // ffmpeg output args. "default" lets ffmpeg pick for the container.
+            var codecArgs: [String] = []
+            let vc = settings.transcodeVideoCodec
+            let ac = settings.transcodeAudioCodec
+            if !(vc.isEmpty || vc == "default") { codecArgs += ["-c:v", vc] }
+            if !(ac.isEmpty || ac == "default") { codecArgs += ["-c:a", ac] }
+            if !codecArgs.isEmpty {
+                args += ["--postprocessor-args", "VideoConvertor+ffmpeg_o:" + codecArgs.joined(separator: " ")]
+            }
         } else if settings.remuxEnabled {
             // Repackage streams into a new container with no re-encode (fast,
             // lossless; only works when the source codecs are valid in target).

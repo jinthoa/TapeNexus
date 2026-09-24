@@ -10,6 +10,17 @@ Sources/TapeNexus/Resources/bin/
 .superpowers/
 .claude/
 
+# Cloud-sync credentials (Supabase publishable key). The committed sync.json
+# is an empty template; put real values in sync.local.json (gitignored) and
+# build.sh bakes it into the app. The publishable key is safe to ship (RLS is
+# the real boundary) but kept out of the repo so it can rotate without a commit.
+Sources/TapeNexus/Resources/sync.local.json
+windows/tapenexus/sync.local.json
+
 # macOS / editor noise
 .DS_Store
 *.swp
+
+# Python bytecode (Windows port) — build artifacts, never commit
+__pycache__/
+*.pyc

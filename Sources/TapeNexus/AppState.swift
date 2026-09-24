@@ -30,6 +30,12 @@ final class AppState: ObservableObject {
     let updater: Updater
     let appUpdater = AppUpdater()
     let menuBar = MenuBarController()
+    /// Local download stats + unlocked badges (fun; per-machine for now).
+    let achievements: AchievementsManager
+    /// Optional cloud sync (Supabase). nil when sync.json is empty/absent —
+    /// the app stays fully local. When configured + signed in, achievements
+    /// sync across machines.
+    let sync: SyncManager?
 
     // Quiet-hours scheduler state.
     private var quietTimer: DispatchSourceTimer?
@@ -52,6 +58,8 @@ final class AppState: ObservableObject {
         let store = SettingsStore()
         self.store = store
         self.settings = store.settings
+        self.achievements = AchievementsManager(supportDir: store.supportDir)
+        self.sync = SyncManager(supportDir: store.supportDir)
         let yt = YTDLPController(store: store)
         self.yt = yt
         let dm = DownloadManager(yt: yt)
@@ -115,6 +123,13 @@ final class AppState: ObservableObject {
         // kick off anything that was queued from a previous session
         if settings.autoStartDownloads {
             downloads.pump()
+        }
+
+        // If cloud sync is configured and we have a saved session, pull the
+        // server achievements row and merge it into local (so badges earned on
+        // another machine appear here), then push the merged snapshot back.
+        if let sync = sync, sync.isSignedIn {
+            Task { await sync.pullAndMerge(into: achievements) }
         }
     }
 
@@ -301,6 +316,8 @@ final class AppState: ObservableObject {
     func retry(_ id: UUID) { downloads.retry(id) }
     func retryAll() { downloads.retryAll() }
     func startNow(_ id: UUID) { downloads.startNow(id) }
+    /// Cancel a queued item's pending/scheduled start (park as stopped).
+    func cancelStart(_ id: UUID) { downloads.cancelStart(id) }
     func startAll() { downloads.startAll() }
     func pauseAll() { downloads.pauseAll() }
     func resumeAll() { downloads.resumeAll() }

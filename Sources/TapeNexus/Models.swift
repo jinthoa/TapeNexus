@@ -230,10 +230,35 @@ struct AppSettings: Codable, Equatable {
     var remuxEnabled: Bool = false
     var transcodeEnabled: Bool = false
     var convertFormat: String = "mp4"   // target container for remux/transcode
+    // Codec overrides apply ONLY to transcode (re-encode), not remux (which
+    // preserves the source codecs). "default" lets ffmpeg pick for the container.
+    var transcodeVideoCodec: String = "default"
+    var transcodeAudioCodec: String = "default"
 
     /// Target containers offered for remux/transcode (yt-dlp accepts these for
     /// --remux-video / --recode-video).
     static let convertFormats: [String] = ["mp4", "mkv", "webm", "avi", "mov", "flv"]
+
+    /// Video codecs offered for transcode (ffmpeg encoder names). "default"
+    /// omits -c:v so ffmpeg chooses for the target container.
+    static let transcodeVideoCodecs: [(key: String, label: String)] = [
+        ("default",    "Default"),
+        ("libx264",    "H.264"),
+        ("libx265",    "H.265 (HEVC)"),
+        ("libvpx-vp9", "VP9"),
+        ("libaom-av1", "AV1"),
+    ]
+
+    /// Audio codecs offered for transcode (ffmpeg encoder names). "default"
+    /// omits -c:a so ffmpeg chooses for the target container.
+    static let transcodeAudioCodecs: [(key: String, label: String)] = [
+        ("default",      "Default"),
+        ("aac",          "AAC"),
+        ("libopus",      "Opus"),
+        ("libmp3lame",   "MP3"),
+        ("flac",         "FLAC"),
+        ("libvorbis",    "Vorbis"),
+    ]
 
     static let formatPresets: [(key: String, label: String, arg: String)] = [
         ("best",   "Best (mp4)",        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"),
@@ -267,7 +292,8 @@ struct AppSettings: Codable, Equatable {
              quietHoursEnabled, quietStart, quietEnd,
              downloadDelaySeconds,
              autoRetryFailed, maxAutoRetries,
-             remuxEnabled, transcodeEnabled, convertFormat
+             remuxEnabled, transcodeEnabled, convertFormat,
+             transcodeVideoCodec, transcodeAudioCodec
     }
 
     init(destinationFolder: String, formatPreset: String, customFormat: String,
@@ -282,7 +308,9 @@ struct AppSettings: Codable, Equatable {
          downloadDelaySeconds: Int = 0,
          autoRetryFailed: Bool = false, maxAutoRetries: Int = 3,
          remuxEnabled: Bool = false, transcodeEnabled: Bool = false,
-         convertFormat: String = "mp4") {
+         convertFormat: String = "mp4",
+         transcodeVideoCodec: String = "default",
+         transcodeAudioCodec: String = "default") {
         self.destinationFolder = destinationFolder
         self.formatPreset = formatPreset; self.customFormat = customFormat
         self.maxConcurrent = maxConcurrent
@@ -300,6 +328,8 @@ struct AppSettings: Codable, Equatable {
         self.autoRetryFailed = autoRetryFailed; self.maxAutoRetries = maxAutoRetries
         self.remuxEnabled = remuxEnabled; self.transcodeEnabled = transcodeEnabled
         self.convertFormat = convertFormat
+        self.transcodeVideoCodec = transcodeVideoCodec
+        self.transcodeAudioCodec = transcodeAudioCodec
     }
 
     init(from decoder: Decoder) throws {
@@ -331,6 +361,8 @@ struct AppSettings: Codable, Equatable {
         remuxEnabled = try c.decodeIfPresent(Bool.self, forKey: .remuxEnabled) ?? false
         transcodeEnabled = try c.decodeIfPresent(Bool.self, forKey: .transcodeEnabled) ?? false
         convertFormat = try c.decodeIfPresent(String.self, forKey: .convertFormat) ?? "mp4"
+        transcodeVideoCodec = try c.decodeIfPresent(String.self, forKey: .transcodeVideoCodec) ?? "default"
+        transcodeAudioCodec = try c.decodeIfPresent(String.self, forKey: .transcodeAudioCodec) ?? "default"
     }
 
     static var `default`: AppSettings {

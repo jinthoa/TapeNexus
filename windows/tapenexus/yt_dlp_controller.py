@@ -271,6 +271,18 @@ class YTDLPController:
             # merge container to match so yt-dlp doesn't remux twice.
             fmt = settings.convert_format or "mp4"
             args += ["--recode-video", fmt, "--merge-output-format", fmt]
+            # Optional codec override: pass -c:v / -c:a to the VideoConvertor's
+            # ffmpeg output args. "default" lets ffmpeg pick for the container.
+            codec_args = []
+            vc = getattr(settings, "transcode_video_codec", "default") or "default"
+            ac = getattr(settings, "transcode_audio_codec", "default") or "default"
+            if vc and vc != "default":
+                codec_args += ["-c:v", vc]
+            if ac and ac != "default":
+                codec_args += ["-c:a", ac]
+            if codec_args:
+                args += ["--postprocessor-args",
+                         "VideoConvertor+ffmpeg_o:" + " ".join(codec_args)]
         elif settings.remux_enabled:
             # Repackage streams into a new container with no re-encode (fast,
             # lossless; only works when the source codecs are valid in target).

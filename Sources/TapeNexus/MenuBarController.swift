@@ -12,8 +12,9 @@ final class MenuBarController {
     func install() {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "arrow.down.circle.fill",
-                                     accessibilityDescription: "Tape Nexus")
+        // Cassette-tape template icon (the app's identity) rather than a generic
+        // SF Symbol — drawn programmatically so it stays crisp + tints correctly.
+        item.button?.image = TapeIcon.statusImage()
         item.button?.image?.isTemplate = true
 
         let menu = NSMenu()

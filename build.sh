@@ -81,12 +81,12 @@ done < <(find "$SRC" -name '*.swift' -print0)
 echo "▶ Compiling (arm64)…"
 swiftc -O -swift-version 5 -target arm64-apple-macos14 -sdk "$SDK" \
   -framework SwiftUI -framework AppKit -framework Foundation -framework Combine \
-  -framework UserNotifications \
+  -framework UserNotifications -framework Network -framework AuthenticationServices \
   "${SWIFT_FILES[@]}" -o "$BUILD/TapeNexus.arm64"
 echo "▶ Compiling (x86_64)…"
 swiftc -O -swift-version 5 -target x86_64-apple-macos14 -sdk "$SDK" \
   -framework SwiftUI -framework AppKit -framework Foundation -framework Combine \
-  -framework UserNotifications \
+  -framework UserNotifications -framework Network -framework AuthenticationServices \
   "${SWIFT_FILES[@]}" -o "$BUILD/TapeNexus.x86_64"
 echo "▶ Linking universal binary…"
 lipo -create "$BUILD/TapeNexus.arm64" "$BUILD/TapeNexus.x86_64" -output "$APP/Contents/MacOS/TapeNexus"
@@ -95,6 +95,15 @@ rm -f "$BUILD/TapeNexus.arm64" "$BUILD/TapeNexus.x86_64"
 # ── 3. Assemble the bundle ───────────────────────────────────────────────────
 echo "▶ Assembling .app bundle…"
 cp "$RES/Info.plist" "$APP/Contents/Info.plist"
+# Cloud-sync config (Supabase URL + publishable/anon key). The committed
+# sync.json is an empty template (sync disabled); if a gitignored
+# sync.local.json exists with real credentials, bake that in instead so the
+# key ships in the app but never enters the repo.
+if [[ -f "$RES/sync.local.json" ]]; then
+  cp "$RES/sync.local.json" "$APP/Contents/Resources/sync.json"
+else
+  cp "$RES/sync.json" "$APP/Contents/Resources/sync.json"
+fi
 cp "$YTDLP" "$APP/Contents/Resources/bin/yt-dlp"
 chmod +x "$APP/Contents/Resources/bin/yt-dlp"
 # ffmpeg + ffprobe (for bestvideo+bestaudio merging)

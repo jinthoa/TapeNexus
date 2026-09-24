@@ -5,10 +5,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QHBoxLayout, QPushButton, QComboBox,
     QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QFileDialog, QGroupBox,
-    QGridLayout, QScrollArea, QWidget,
+    QScrollArea, QWidget, QLabel,
 )
 
-from ..models import AppSettings, FORMAT_PRESETS, COOKIE_BROWSERS, CONVERT_FORMATS
+from ..models import (
+    AppSettings, FORMAT_PRESETS, COOKIE_BROWSERS, CONVERT_FORMATS,
+    TRANSCODE_VIDEO_CODECS, TRANSCODE_AUDIO_CODECS,
+)
 from . import theme
 
 
@@ -63,10 +66,26 @@ class SettingsDialog(QDialog):
         cur = getattr(s, "convert_format", "mp4") or "mp4"
         self.convert_fmt.setCurrentIndex(max(0, CONVERT_FORMATS.index(cur) if cur in CONVERT_FORMATS else 0))
         dl_layout.addRow("Container format", self.convert_fmt)
+        # Codec pickers apply to transcode (re-encode) only — remux preserves
+        # the source codecs, so they're disabled unless transcode is checked.
+        self.t_vcodec = QComboBox()
+        for k, label in TRANSCODE_VIDEO_CODECS:
+            self.t_vcodec.addItem(label, k)
+        vcur = getattr(s, "transcode_video_codec", "default") or "default"
+        self.t_vcodec.setCurrentIndex(max(0, [k for k, _ in TRANSCODE_VIDEO_CODECS].index(vcur)
+                                            if vcur in [k for k, _ in TRANSCODE_VIDEO_CODECS] else 0))
+        dl_layout.addRow("Transcode video codec", self.t_vcodec)
+        self.t_acodec = QComboBox()
+        for k, label in TRANSCODE_AUDIO_CODECS:
+            self.t_acodec.addItem(label, k)
+        acur = getattr(s, "transcode_audio_codec", "default") or "default"
+        self.t_acodec.setCurrentIndex(max(0, [k for k, _ in TRANSCODE_AUDIO_CODECS].index(acur)
+                                            if acur in [k for k, _ in TRANSCODE_AUDIO_CODECS] else 0))
+        dl_layout.addRow("Transcode audio codec", self.t_acodec)
         # Mutual exclusion: enabling one disables the other.
         self.remux.toggled.connect(self._on_remux_toggled)
         self.transcode.toggled.connect(self._on_transcode_toggled)
-        self.convert_fmt.setEnabled(self.remux.isChecked() or self.transcode.isChecked())
+        self._update_convert_enabled()
 
         self.concurrent = QSpinBox()
         self.concurrent.setRange(1, 4)
@@ -187,15 +206,22 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
 
+    def _update_convert_enabled(self) -> None:
+        active = self.remux.isChecked() or self.transcode.isChecked()
+        self.convert_fmt.setEnabled(active)
+        tc = self.transcode.isChecked()
+        self.t_vcodec.setEnabled(tc)
+        self.t_acodec.setEnabled(tc)
+
     def _on_remux_toggled(self, on: bool) -> None:
         if on:
             self.transcode.setChecked(False)
-        self.convert_fmt.setEnabled(self.remux.isChecked() or self.transcode.isChecked())
+        self._update_convert_enabled()
 
     def _on_transcode_toggled(self, on: bool) -> None:
         if on:
             self.remux.setChecked(False)
-        self.convert_fmt.setEnabled(self.remux.isChecked() or self.transcode.isChecked())
+        self._update_convert_enabled()
 
     def _reset(self) -> None:
         d = AppSettings.default()
@@ -211,7 +237,13 @@ class SettingsDialog(QDialog):
         self.transcode.setChecked(getattr(d, "transcode_enabled", False))
         cf = getattr(d, "convert_format", "mp4") or "mp4"
         self.convert_fmt.setCurrentIndex(max(0, CONVERT_FORMATS.index(cf) if cf in CONVERT_FORMATS else 0))
-        self.convert_fmt.setEnabled(self.remux.isChecked() or self.transcode.isChecked())
+        vcur = getattr(d, "transcode_video_codec", "default") or "default"
+        self.t_vcodec.setCurrentIndex(max(0, [k for k, _ in TRANSCODE_VIDEO_CODECS].index(vcur)
+                                            if vcur in [k for k, _ in TRANSCODE_VIDEO_CODECS] else 0))
+        acur = getattr(d, "transcode_audio_codec", "default") or "default"
+        self.t_acodec.setCurrentIndex(max(0, [k for k, _ in TRANSCODE_AUDIO_CODECS].index(acur)
+                                            if acur in [k for k, _ in TRANSCODE_AUDIO_CODECS] else 0))
+        self._update_convert_enabled()
         self.sponsor.setChecked(d.sponsor_block)
         self.meta.setChecked(d.embed_metadata)
         self.subs.setChecked(d.embed_subs)
@@ -240,6 +272,8 @@ class SettingsDialog(QDialog):
         s.remux_enabled = self.remux.isChecked()
         s.transcode_enabled = self.transcode.isChecked()
         s.convert_format = self.convert_fmt.currentData()
+        s.transcode_video_codec = self.t_vcodec.currentData()
+        s.transcode_audio_codec = self.t_acodec.currentData()
         s.sponsor_block = self.sponsor.isChecked()
         s.embed_metadata = self.meta.isChecked()
         s.embed_subs = self.subs.isChecked()

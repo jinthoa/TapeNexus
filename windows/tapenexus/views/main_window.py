@@ -16,6 +16,7 @@ from . import theme
 from .queue_row import QueueRow
 from .settings_dialog import SettingsDialog
 from .update_dialog import UpdateDialog
+from .auth import AccountControl
 
 
 FILTERS = [("all", "All"), ("active", "Active"), ("done", "Done"), ("failed", "Failed")]
@@ -90,6 +91,11 @@ class MainWindow(QMainWindow):
         gear.setFixedWidth(34)
         gear.clicked.connect(self._open_settings)
         header.addWidget(gear)
+
+        # Top-right account control: "Sign in" button (signed out) or avatar
+        # → achievements + sign out (signed in). Hidden if sync unconfigured.
+        self.account = AccountControl(self.state)
+        header.addWidget(self.account)
         root.addLayout(header)
 
         # filter bar: segmented All/Active/Done/Failed + bulk actions
