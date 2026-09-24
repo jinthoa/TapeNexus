@@ -68,7 +68,7 @@ jobs:
         working-directory: windows
         run: |
           $tag = $env:TN_VERSION
-          if (-not $tag -or $tag -eq "v") { $tag = "v1.0.16" }
+          if (-not $tag -or $tag -eq "v") { $tag = "v1.0.17" }
           # Create the release if it doesn't already exist; ignore the error if it does.
           gh release create $tag --title "Tape Nexus $tag" --notes "Tape Nexus $tag" 2>$null
           if ($LASTEXITCODE -ne 0) { Write-Host "release $tag already exists" }
