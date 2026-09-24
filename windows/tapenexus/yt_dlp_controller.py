@@ -261,6 +261,21 @@ class YTDLPController:
         ext = audio_extract_format(preset)
         if ext:
             args += ["--extract-audio", "--audio-format", ext]
+        elif preset == "audio":
+            # Audio-only (m4a): keep the native audio stream; no video container
+            # conversion applies.
+            args += ["--merge-output-format", "mp4"]
+        elif settings.transcode_enabled:
+            # Re-encode video+audio into the chosen container via ffmpeg (slow,
+            # true transcode; works for any source->target combination). Set the
+            # merge container to match so yt-dlp doesn't remux twice.
+            fmt = settings.convert_format or "mp4"
+            args += ["--recode-video", fmt, "--merge-output-format", fmt]
+        elif settings.remux_enabled:
+            # Repackage streams into a new container with no re-encode (fast,
+            # lossless; only works when the source codecs are valid in target).
+            fmt = settings.convert_format or "mp4"
+            args += ["--remux-video", fmt, "--merge-output-format", fmt]
         else:
             # Video presets: package the merged output as an .mp4 container so
             # "Best (mp4)" / 1080p / 720p actually deliver .mp4 (the format
@@ -280,7 +295,12 @@ class YTDLPController:
     # ── progress parsing ─────────────────────────────────────────────────────
     @staticmethod
     def parse_stdout(line: str):
-        """Return one of: ('dj', pct, speed, eta, dl, tot) | ('file', path) | ('log', line)."""
+        """Return one of:
+        ('dj', pct, speed, eta, dl, tot, tmpfile) | ('file', path) | ('log', line).
+        tmpfile is the .part path yt-dlp is writing (from progress JSON
+        tmpfilename, falling back to filename+'.part') so a stopped download can
+        delete its partial file; empty when no file is being written.
+        """
         t = line.strip()
         if not t:
             return None
@@ -295,7 +315,12 @@ class YTDLPController:
                    or int(obj.get("total_bytes_estimate") or 0))
             speed = obj.get("speed") or 0
             eta = obj.get("eta") or 0
-            return ("dj", pct / 100.0, speed, eta, dl, tot)
+            tmp = obj.get("tmpfilename") or ""
+            if not tmp:
+                fn = obj.get("filename") or ""
+                if fn and not fn.endswith(".part"):
+                    tmp = fn + ".part"
+            return ("dj", pct / 100.0, speed, eta, dl, tot, tmp)
         if t.startswith("FILEPATH:"):
             return ("file", t[len("FILEPATH:"):].strip())
         return ("log", t)

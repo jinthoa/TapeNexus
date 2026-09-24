@@ -49,6 +49,9 @@ class DownloadWorker(QObject):
         self._buf_out = ""
         self._buf_err = ""
         self._last_err = ""  # last yt-dlp ERROR line, to surface as the failure reason
+        # Temp .part file paths yt-dlp is writing, captured from progress JSON
+        # (tmpfilename) so a stopped download can delete its partial files.
+        self.part_files: List[str] = []
         self.proc.readyReadStandardOutput.connect(self._on_out)
         self.proc.readyReadStandardError.connect(self._on_err)
         self.proc.finished.connect(self._on_finished)
@@ -86,10 +89,12 @@ class DownloadWorker(QObject):
             return
         tag = parsed[0]
         if tag == "dj":
-            _, pct, speed, eta, dl, tot = parsed
+            _, pct, speed, eta, dl, tot, tmp = parsed
             self.progress.emit(self.item_id, pct,
                                YTDLPController.format_speed(speed),
                                YTDLPController.format_eta(eta), dl, tot)
+            if tmp and tmp not in self.part_files:
+                self.part_files.append(tmp)
         elif tag == "file":
             self.filepath.emit(self.item_id, parsed[1])
         elif tag == "log":
@@ -613,8 +618,17 @@ class AppState(QObject):
         if w:
             try:
                 w.proc.kill()
+                w.proc.waitForFinished(3000)
             except Exception:
                 pass
+            # Delete the partial .part file(s) yt-dlp was writing so a stopped
+            # download doesn't leave disk litter. waitForFinished releases the
+            # OS file handle (Windows locks open files) before we remove.
+            for p in getattr(w, "part_files", []):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
         self.update(item_id, status="stopped", pid=0)
         self._persist_queue()
 
@@ -697,6 +711,13 @@ class AppState(QObject):
             try:
                 os.remove(it.output_file_path)
             except Exception:
+                pass
+        # Also remove a leftover .part if the item never finished (parity with
+        # the macOS deleteFile, which trashes the file and hard-deletes .part).
+        if it.status != "done":
+            try:
+                os.remove(it.output_file_path + ".part")
+            except OSError:
                 pass
         self.remove(item_id)
 

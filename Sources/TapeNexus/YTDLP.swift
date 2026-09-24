@@ -282,6 +282,7 @@ final class YTDLPController: @unchecked Sendable {
                        suppressCookies: Bool = false,
                        onProgress: @escaping (Double, String, String, Int64, Int64) -> Void,
                        onFilePath: @escaping (String) -> Void,
+                       onPartFile: @escaping (String) -> Void,
                        onLog: @escaping (String) -> Void,
                        onComplete: @escaping (Bool, String) -> Void) -> pid_t {
         let p = Process()
@@ -333,6 +334,9 @@ final class YTDLPController: @unchecked Sendable {
         let mainLog: (String) -> Void = { line in
             DispatchQueue.main.async { onLog(line) }
         }
+        let mainPartFile: (String) -> Void = { path in
+            DispatchQueue.main.async { onPartFile(path) }
+        }
 
         // stdout: yt-dlp's --print (FILEPATH:) and --progress-template (DJ/PJ)
         // lines, newline-separated via --newline. parseStdout trims any \r.
@@ -345,6 +349,7 @@ final class YTDLPController: @unchecked Sendable {
             self.parseStdout(line,
                              onProgress: mainProgress,
                              onFilePath: mainFile,
+                             onPartFile: mainPartFile,
                              onLog: mainLog)
         }
         readLines(errPipe.fileHandleForReading) { line in
@@ -418,6 +423,21 @@ final class YTDLPController: @unchecked Sendable {
         // container. Requires the bundled ffmpeg, which is already located above.
         if let audioFmt = AppSettings.audioExtractFormats[preset] {
             args += ["--extract-audio", "--audio-format", audioFmt]
+        } else if preset == "audio" {
+            // Audio-only (m4a): keep the native audio stream; no video container
+            // conversion applies.
+            args += ["--merge-output-format", "mp4"]
+        } else if settings.transcodeEnabled {
+            // Re-encode video+audio into the chosen container via ffmpeg (slow,
+            // true transcode; works for any source→target combination). Set the
+            // merge container to match so yt-dlp doesn't remux twice.
+            let fmt = settings.convertFormat.isEmpty ? "mp4" : settings.convertFormat
+            args += ["--recode-video", fmt, "--merge-output-format", fmt]
+        } else if settings.remuxEnabled {
+            // Repackage streams into a new container with no re-encode (fast,
+            // lossless; only works when the source codecs are valid in target).
+            let fmt = settings.convertFormat.isEmpty ? "mp4" : settings.convertFormat
+            args += ["--remux-video", fmt, "--merge-output-format", fmt]
         } else {
             // Video presets: package the merged output as an .mp4 container so
             // "Best (mp4)" / 1080p / 720p actually deliver .mp4 (the format
@@ -442,6 +462,7 @@ final class YTDLPController: @unchecked Sendable {
     private func parseStdout(_ line: String,
                              onProgress: (Double, String, String, Int64, Int64) -> Void,
                              onFilePath: (String) -> Void,
+                             onPartFile: (String) -> Void,
                              onLog: (String) -> Void) {
         let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { return }
@@ -472,6 +493,17 @@ final class YTDLPController: @unchecked Sendable {
                 }
                 _ = tag
                 onProgress(norm, speedStr, etaStr, downloaded, total)
+                // Capture the .part path yt-dlp is currently writing (tmpfilename,
+                // falling back to filename+'.part') so a stopped download can
+                // delete its partial file. Multi-stream downloads emit one path
+                // per stream; the caller dedupes.
+                var tmp = (obj["tmpfilename"] as? String) ?? ""
+                if tmp.isEmpty {
+                    if let fn = obj["filename"] as? String, !fn.isEmpty, !fn.hasSuffix(".part") {
+                        tmp = fn + ".part"
+                    }
+                }
+                if !tmp.isEmpty { onPartFile(tmp) }
             }
             return
         }

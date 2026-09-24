@@ -48,6 +48,30 @@ struct SettingsSheet: View {
                                     .textFieldStyle(.roundedBorder).frame(width: 320)
                             }
                         }
+                        // Optional video container conversion (mutually exclusive).
+                        // remux = fast container swap (no re-encode); transcode =
+                        // full re-encode via ffmpeg. Audio presets ignore both.
+                        let remuxBinding = Binding<Bool>(
+                            get: { draft.remuxEnabled },
+                            set: { draft.remuxEnabled = $0; if $0 { draft.transcodeEnabled = false } }
+                        )
+                        let transcodeBinding = Binding<Bool>(
+                            get: { draft.transcodeEnabled },
+                            set: { draft.transcodeEnabled = $0; if $0 { draft.remuxEnabled = false } }
+                        )
+                        toggle("Remux video to container (fast, no re-encode)", isOn: remuxBinding)
+                        toggle("Transcode video to container (re-encode via ffmpeg)", isOn: transcodeBinding)
+                        if draft.remuxEnabled || draft.transcodeEnabled {
+                            row("Container format") {
+                                Picker("", selection: $draft.convertFormat) {
+                                    ForEach(AppSettings.convertFormats, id: \.self) { f in Text(f).tag(f) }
+                                }.pickerStyle(.menu).frame(width: 220)
+                            }
+                            Text(draft.transcodeEnabled
+                                 ? "Re-encodes the downloaded video into the chosen container. Slower and slightly lossy, but works for any source→target combination. Applies to video presets only."
+                                 : "Repackages the streams into a new container with no re-encode — fast and lossless, but only works when the source codecs are valid in the target container.")
+                                .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        }
                         row("Concurrent downloads") {
                             Stepper(value: $draft.maxConcurrent, in: 1...4) {
                                 Text("\(draft.maxConcurrent)").font(.system(size: 12, design: .monospaced))

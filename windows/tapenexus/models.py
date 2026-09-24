@@ -29,6 +29,10 @@ FORMAT_PRESETS: List[tuple] = [
     ("custom", "Custom…", "", None),
 ]
 
+# Target containers for the optional remux/transcode of downloaded video via the
+# bundled ffmpeg (yt-dlp --remux-video / --recode-video).
+CONVERT_FORMATS = ["mp4", "mkv", "webm", "avi", "mov", "flv"]
+
 COOKIE_BROWSERS = [
     ("", "None"),
     ("chrome", "Chrome"),
@@ -189,6 +193,12 @@ class AppSettings:
     # v1.0.12: auto-retry failed downloads up to a capped number of attempts.
     auto_retry_failed: bool = False
     max_auto_retries: int = 3
+    # v1.0.15: optional video container conversion via the bundled ffmpeg.
+    # remux = --remux-video (fast, no re-encode); transcode = --recode-video
+    # (re-encode, slower). Mutually exclusive; transcode wins if both are set.
+    remux_enabled: bool = False
+    transcode_enabled: bool = False
+    convert_format: str = "mp4"
 
     @staticmethod
     def default() -> "AppSettings":
@@ -217,6 +227,7 @@ SUPPORTED_HOSTS = {
     "patreon.com", "kick.com", "rumble.com", "bitchute.com",
     "media.ccc.de", "peertube.tv", "odysee.com",
     "media.giphy.com", "flickr.com", "artstation.com",
+    "archive.org",
 }
 
 _URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")

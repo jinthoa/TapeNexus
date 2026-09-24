@@ -35,6 +35,7 @@ enum SupportedURLs {
         "media.giphy.com",
         "flickr.com",
         "artstation.com",
+        "archive.org",
         "pornhub.com"
     ]
 

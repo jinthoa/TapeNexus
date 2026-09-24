@@ -223,6 +223,18 @@ struct AppSettings: Codable, Equatable {
     var autoRetryFailed: Bool = false
     var maxAutoRetries: Int = 3
 
+    // v1.0.15: optional video container conversion via the bundled ffmpeg.
+    // remux = --remux-video (fast, no re-encode); transcode = --recode-video
+    // (re-encode, slower). The two are mutually exclusive; buildArgs lets
+    // transcode win if both are somehow on. Audio presets ignore both.
+    var remuxEnabled: Bool = false
+    var transcodeEnabled: Bool = false
+    var convertFormat: String = "mp4"   // target container for remux/transcode
+
+    /// Target containers offered for remux/transcode (yt-dlp accepts these for
+    /// --remux-video / --recode-video).
+    static let convertFormats: [String] = ["mp4", "mkv", "webm", "avi", "mov", "flv"]
+
     static let formatPresets: [(key: String, label: String, arg: String)] = [
         ("best",   "Best (mp4)",        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo*+bestaudio/best"),
         ("1080p",  "Up to 1080p",       "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]"),
@@ -254,7 +266,8 @@ struct AppSettings: Codable, Equatable {
              playlistCap, notifyOnComplete, menuBarMode,
              quietHoursEnabled, quietStart, quietEnd,
              downloadDelaySeconds,
-             autoRetryFailed, maxAutoRetries
+             autoRetryFailed, maxAutoRetries,
+             remuxEnabled, transcodeEnabled, convertFormat
     }
 
     init(destinationFolder: String, formatPreset: String, customFormat: String,
@@ -267,7 +280,9 @@ struct AppSettings: Codable, Equatable {
          menuBarMode: Bool = false, quietHoursEnabled: Bool = false,
          quietStart: Int = 23, quietEnd: Int = 7,
          downloadDelaySeconds: Int = 0,
-         autoRetryFailed: Bool = false, maxAutoRetries: Int = 3) {
+         autoRetryFailed: Bool = false, maxAutoRetries: Int = 3,
+         remuxEnabled: Bool = false, transcodeEnabled: Bool = false,
+         convertFormat: String = "mp4") {
         self.destinationFolder = destinationFolder
         self.formatPreset = formatPreset; self.customFormat = customFormat
         self.maxConcurrent = maxConcurrent
@@ -283,6 +298,8 @@ struct AppSettings: Codable, Equatable {
         self.quietStart = quietStart; self.quietEnd = quietEnd
         self.downloadDelaySeconds = downloadDelaySeconds
         self.autoRetryFailed = autoRetryFailed; self.maxAutoRetries = maxAutoRetries
+        self.remuxEnabled = remuxEnabled; self.transcodeEnabled = transcodeEnabled
+        self.convertFormat = convertFormat
     }
 
     init(from decoder: Decoder) throws {
@@ -311,6 +328,9 @@ struct AppSettings: Codable, Equatable {
         downloadDelaySeconds = try c.decodeIfPresent(Int.self, forKey: .downloadDelaySeconds) ?? 0
         autoRetryFailed = try c.decodeIfPresent(Bool.self, forKey: .autoRetryFailed) ?? false
         maxAutoRetries = try c.decodeIfPresent(Int.self, forKey: .maxAutoRetries) ?? 3
+        remuxEnabled = try c.decodeIfPresent(Bool.self, forKey: .remuxEnabled) ?? false
+        transcodeEnabled = try c.decodeIfPresent(Bool.self, forKey: .transcodeEnabled) ?? false
+        convertFormat = try c.decodeIfPresent(String.self, forKey: .convertFormat) ?? "mp4"
     }
 
     static var `default`: AppSettings {

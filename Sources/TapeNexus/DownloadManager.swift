@@ -27,6 +27,11 @@ final class DownloadManager {
     /// while refills as slots free space out by `downloadDelaySeconds`.
     private var burstRemaining: Int = 0
 
+    /// .part file paths yt-dlp is currently writing, per active download, so a
+    /// stopped download can delete its partial file(s). Populated from the
+    /// progress JSON's tmpfilename; cleared on completion / stop / remove.
+    private var partFilesByItem: [UUID: [String]] = [:]
+
     /// Called whenever queue changes; starts queued items up to the limit.
     func pump() {
         guard let state = state else { return }
@@ -66,12 +71,24 @@ final class DownloadManager {
             onFilePath: { [weak state] path in
                 state?.update(id) { $0.outputFilePath = path }
             },
+            onPartFile: { [weak self] path in
+                // Track the .part file(s) yt-dlp is writing so stop() can clean
+                // them up. Dedupe — multi-stream downloads re-emit per stream.
+                guard let self = self else { return }
+                let existing = self.partFilesByItem[id] ?? []
+                if !existing.contains(path) {
+                    self.partFilesByItem[id] = existing + [path]
+                }
+            },
             onLog: { [weak state] log in
                 // stash last log line as message context for failed items
                 state?.appendLog(id, line: log)
             },
             onComplete: { [weak self, weak state] ok, err in
                 guard let self = self, let state = state else { return }
+                // The download finished (success or failure): the .part file is
+                // gone (renamed to the final file on success), so drop tracking.
+                self.partFilesByItem.removeValue(forKey: id)
                 let finished = state.item(id)
                 // Cookies fallback: if browser cookies were used for this attempt
                 // and yt-dlp failed before any download progress (an extraction-
@@ -165,6 +182,13 @@ final class DownloadManager {
         }
         state.update(id) { $0.status = .stopped; $0.pid = 0 }
         state.persist()
+        // Delete the partial .part file(s) yt-dlp was writing so a stopped
+        // download doesn't leave disk litter. Unix allows unlinking a file that
+        // is still open (freed once the dying process closes it), so removing
+        // immediately is safe even before SIGKILL lands.
+        if let parts = partFilesByItem.removeValue(forKey: id), !parts.isEmpty {
+            for p in parts { try? FileManager.default.removeItem(atPath: p) }
+        }
     }
 
     func retry(_ id: UUID) {
@@ -294,6 +318,8 @@ final class DownloadManager {
         guard let state = state else { return }
         if let item = state.item(id), item.status == .downloading || item.status == .paused {
             stop(id)
+        } else {
+            partFilesByItem.removeValue(forKey: id)
         }
         state.removeItem(id)
         state.persist()

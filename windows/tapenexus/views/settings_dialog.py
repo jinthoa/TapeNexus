@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QScrollArea, QWidget,
 )
 
-from ..models import AppSettings, FORMAT_PRESETS, COOKIE_BROWSERS
+from ..models import AppSettings, FORMAT_PRESETS, COOKIE_BROWSERS, CONVERT_FORMATS
 from . import theme
 
 
@@ -48,6 +48,25 @@ class SettingsDialog(QDialog):
         dl_layout.addRow("Default format", self.format)
         self.custom = QLineEdit(s.custom_format)
         dl_layout.addRow("Custom -f string", self.custom)
+
+        # Optional video container conversion (mutually exclusive):
+        # remux = fast container swap (no re-encode); transcode = full re-encode.
+        self.remux = QCheckBox("Remux video to container (fast, no re-encode)")
+        self.remux.setChecked(getattr(s, "remux_enabled", False))
+        dl_layout.addRow(self.remux)
+        self.transcode = QCheckBox("Transcode video to container (re-encode via ffmpeg)")
+        self.transcode.setChecked(getattr(s, "transcode_enabled", False))
+        dl_layout.addRow(self.transcode)
+        self.convert_fmt = QComboBox()
+        for f in CONVERT_FORMATS:
+            self.convert_fmt.addItem(f, f)
+        cur = getattr(s, "convert_format", "mp4") or "mp4"
+        self.convert_fmt.setCurrentIndex(max(0, CONVERT_FORMATS.index(cur) if cur in CONVERT_FORMATS else 0))
+        dl_layout.addRow("Container format", self.convert_fmt)
+        # Mutual exclusion: enabling one disables the other.
+        self.remux.toggled.connect(self._on_remux_toggled)
+        self.transcode.toggled.connect(self._on_transcode_toggled)
+        self.convert_fmt.setEnabled(self.remux.isChecked() or self.transcode.isChecked())
 
         self.concurrent = QSpinBox()
         self.concurrent.setRange(1, 4)
@@ -168,6 +187,16 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
 
+    def _on_remux_toggled(self, on: bool) -> None:
+        if on:
+            self.transcode.setChecked(False)
+        self.convert_fmt.setEnabled(self.remux.isChecked() or self.transcode.isChecked())
+
+    def _on_transcode_toggled(self, on: bool) -> None:
+        if on:
+            self.remux.setChecked(False)
+        self.convert_fmt.setEnabled(self.remux.isChecked() or self.transcode.isChecked())
+
     def _reset(self) -> None:
         d = AppSettings.default()
         self.dest.setText(d.destination_folder)
@@ -178,6 +207,11 @@ class SettingsDialog(QDialog):
         self.autoretry.setChecked(getattr(d, "auto_retry_failed", False))
         self.maxretries.setValue(getattr(d, "max_auto_retries", 3))
         self.maxretries.setEnabled(self.autoretry.isChecked())
+        self.remux.setChecked(getattr(d, "remux_enabled", False))
+        self.transcode.setChecked(getattr(d, "transcode_enabled", False))
+        cf = getattr(d, "convert_format", "mp4") or "mp4"
+        self.convert_fmt.setCurrentIndex(max(0, CONVERT_FORMATS.index(cf) if cf in CONVERT_FORMATS else 0))
+        self.convert_fmt.setEnabled(self.remux.isChecked() or self.transcode.isChecked())
         self.sponsor.setChecked(d.sponsor_block)
         self.meta.setChecked(d.embed_metadata)
         self.subs.setChecked(d.embed_subs)
@@ -203,6 +237,9 @@ class SettingsDialog(QDialog):
         s.download_delay_seconds = self.delay.value()
         s.auto_retry_failed = self.autoretry.isChecked()
         s.max_auto_retries = self.maxretries.value()
+        s.remux_enabled = self.remux.isChecked()
+        s.transcode_enabled = self.transcode.isChecked()
+        s.convert_format = self.convert_fmt.currentData()
         s.sponsor_block = self.sponsor.isChecked()
         s.embed_metadata = self.meta.isChecked()
         s.embed_subs = self.subs.isChecked()
