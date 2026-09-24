@@ -18,6 +18,7 @@ from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
 from .achievements import Achievement, AchievementsManager
 from .clipboard_monitor import ClipboardMonitor
+from .library_manager import LibraryManager
 from .models import (
     AppSettings, DownloadItem, FormatInfo, extract_urls, format_label,
     looks_like_playlist,
@@ -146,6 +147,9 @@ class AppState(QObject):
         self.achievements = AchievementsManager(_appdata_dir())
         # Optional cloud sync (Supabase). Stays local-only when unconfigured.
         self.sync = SyncManager(_appdata_dir())
+        # Persistent archive of completed downloads — survives "Clear done".
+        # Surfaced as the Library tab; snapshotted from finished queue items.
+        self.library = LibraryManager(_appdata_dir())
         self.clipboard = ClipboardMonitor()
         self.items: List[DownloadItem] = []
         self.settings = AppSettings.default()
@@ -186,6 +190,10 @@ class AppState(QObject):
         self._launch_tokens: Dict[str, object] = {}
 
         self._load()
+        # One-time first-run seed: if there's no library.json yet, import the
+        # currently-done queue items so existing users don't lose their history
+        # the first time they hit "Clear done".
+        self.library.seed(self.items)
         self._meta_pool = ThreadPoolExecutor(
             max_workers=max(1, self.settings.max_concurrent),
             thread_name_prefix="tn-meta")
@@ -589,7 +597,7 @@ class AppState(QObject):
             return
         if ok:
             self.update(item_id, status="done", progress=1.0, error_message="",
-                        pid=0, retry_count=0)
+                        pid=0, retry_count=0, completed_at=datetime.now().isoformat())
             self._persist_queue()
             # Achievements: tally completed downloads + bytes locally (always,
             # so progress is never lost), but only surface unlock notifications
@@ -609,6 +617,11 @@ class AppState(QObject):
         # attempt instead of leaving it failed. The start delay (if set) paces
         # the retries via pump()/_schedule_starts().
         finished_it = self.item(item_id)
+        if finished_it and finished_it.status == "done":
+            # Snapshot into the persistent Library archive so the completed
+            # download survives "Clear done" and stays browseable / re-
+            # downloadable from the Library tab.
+            self.library.archive(finished_it)
         if (not ok and finished_it and finished_it.status == "failed"
                 and self.settings.auto_retry_failed
                 and finished_it.retry_count < self.settings.max_auto_retries):

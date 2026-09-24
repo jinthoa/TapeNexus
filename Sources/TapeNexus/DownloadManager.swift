@@ -108,7 +108,7 @@ final class DownloadManager {
                 state.update(id) {
                     if ok {
                         $0.status = .done; $0.progress = 1; $0.errorMessage = ""
-                        $0.retryCount = 0
+                        $0.completedAt = Date(); $0.retryCount = 0
                     } else {
                         // don't override a user-driven stopped/paused state
                         if $0.status == .downloading {
@@ -151,6 +151,10 @@ final class DownloadManager {
                 // feature now. Badges earned while signed out still unlock locally
                 // and appear (and sync) once the user signs in.
                 if let it = finished2, it.status == .done {
+                    // Snapshot into the persistent Library archive so the
+                    // completed download survives "Clear done" and stays
+                    // browseable / re-downloadable from the Library tab.
+                    state.library.archive(it, completedAt: it.completedAt ?? Date())
                     let unlocked = state.achievements.recordCompletion(totalBytes: it.totalBytes)
                     let signedIn = state.sync?.isSignedIn ?? false
                     if signedIn {

@@ -49,6 +49,9 @@ struct DownloadItem: Identifiable, Codable, Hashable {
     var outputFilePath: String
     var addedAt: Date
     var pausedByUser: Bool
+    /// When the download reached `.done`. Nil until completion. Persisted so the
+    /// Library archive has a timestamp even after the queue row is cleared.
+    var completedAt: Date? = nil
 
     // Per-item overrides (v1.0.2). Empty → fall back to global settings.
     var formatPreset: String = ""    // "" | "best" | "1080p" | ... | "custom"
@@ -82,7 +85,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
              downloadedBytes, totalBytes, outputFilePath, addedAt, pausedByUser,
              formatPreset, customFormat, clipStart, clipEnd,
              startAt,
-             retryCount
+             retryCount,
+             completedAt
     }
 
     init(id: UUID = UUID(), url: String, title: String = "", uploader: String = "",
@@ -94,7 +98,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
          formatPreset: String = "", customFormat: String = "",
          clipStart: String = "", clipEnd: String = "",
          startAt: Date? = nil,
-         retryCount: Int = 0) {
+         retryCount: Int = 0,
+         completedAt: Date? = nil) {
         self.id = id; self.url = url; self.title = title; self.uploader = uploader
         self.thumbnailURL = thumbnailURL; self.durationStr = durationStr
         self.status = status; self.progress = progress; self.speedStr = speedStr
@@ -106,6 +111,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         self.clipStart = clipStart; self.clipEnd = clipEnd
         self.startAt = startAt
         self.retryCount = retryCount
+        self.completedAt = completedAt
     }
 
     private init(fromCore dec: Decoder) throws {
@@ -133,6 +139,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         clipEnd = try c.decodeIfPresent(String.self, forKey: .clipEnd) ?? ""
         startAt = try c.decodeIfPresent(Date.self, forKey: .startAt)
         retryCount = try c.decodeIfPresent(Int.self, forKey: .retryCount) ?? 0
+        completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
     }
     init(from decoder: Decoder) throws { try self.init(fromCore: decoder) }
 

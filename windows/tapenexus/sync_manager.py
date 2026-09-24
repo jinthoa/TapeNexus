@@ -11,6 +11,7 @@ Mirrors Sources/TapeNexus/SyncManager.swift on the macOS side.
 from __future__ import annotations
 
 import base64
+import ctypes
 import hashlib
 import http.server
 import json
@@ -96,6 +97,9 @@ class SyncManager(QObject):
     email_changed = Signal(str)
     auth_done = Signal(bool)
     auth_error = Signal(str)
+    # One-shot: emitted when the Credential Manager refused to store the session
+    # and we fell back to the plaintext file, so the UI can warn the user.
+    storage_warning = Signal(str)
     # Linked providers list changed (e.g. after a Google/email link). Lets the
     # avatar popup refresh its "Link …" buttons live.
     providers_changed = Signal(list)
@@ -112,6 +116,7 @@ class SyncManager(QObject):
         self._is_signed_in = False
         self._email = ""
         self._providers: list[str] = []
+        self._storage_warned = False
         self._merge_target = None
         self.is_configured = bool(self._url and self._anon)
         self.pull_ready.connect(self._on_pull_ready)
@@ -196,19 +201,55 @@ class SyncManager(QObject):
             self._set_providers([])
 
     def _save_session(self) -> None:
+        if not self._session:
+            self._clear_session()
+            return
+        # Try the Credential Manager first; on failure fall back to the
+        # plaintext file + a one-shot warning so the app keeps working.
+        if _cred_write(json.dumps(self._session)):
+            return
         try:
             with open(self._session_path, "w", encoding="utf-8") as fh:
                 json.dump(self._session, fh)
+            if not self._storage_warned:
+                self._storage_warned = True
+                self.storage_warning.emit(
+                    "Couldn't store your session in Windows Credential Manager "
+                    "— falling back to an unencrypted file.")
         except Exception:
             pass
 
-    def restore_session(self) -> None:
+    def _clear_session(self) -> None:
+        _cred_delete()
         try:
-            with open(self._session_path, "r", encoding="utf-8") as fh:
-                s = json.load(fh)
+            os.remove(self._session_path)
+        except OSError:
+            pass
+
+    def restore_session(self) -> None:
+        # Prefer Credential Manager; fall back to the legacy plaintext file and
+        # migrate it into the Credential Manager, then delete the file.
+        blob = _cred_read()
+        if blob is None:
+            try:
+                with open(self._session_path, "r", encoding="utf-8") as fh:
+                    blob = fh.read()
+                migrated = True
+            except Exception:
+                return
+        else:
+            migrated = False
+        try:
+            s = json.loads(blob)
         except Exception:
             return
         self._session = s
+        if migrated:
+            _cred_write(blob)
+            try:
+                os.remove(self._session_path)
+            except OSError:
+                pass
         now = datetime.now(timezone.utc).timestamp()
         if now > float(s.get("expires_at", 0)) - 60:
             threading.Thread(target=self._refresh, daemon=True).start()
@@ -225,10 +266,7 @@ class SyncManager(QObject):
             self._apply_session(j)
         except Exception:
             self._session = None
-            try:
-                os.remove(self._session_path)
-            except OSError:
-                pass
+            self._clear_session()
             self._set_signed_in(False)
 
     # ── public auth (each spawns a worker thread) ──────────────────────────
@@ -317,10 +355,7 @@ class SyncManager(QObject):
             except Exception:
                 pass
             self._session = None
-            try:
-                os.remove(self._session_path)
-            except OSError:
-                pass
+            self._clear_session()
             self._set_signed_in(False)
 
         threading.Thread(target=_do, daemon=True).start()
@@ -512,6 +547,95 @@ class SyncManager(QObject):
 
 def _b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("utf-8")
+
+
+# ── Windows Credential Manager (dependency-free ctypes) ─────────────────────
+# Stores the Supabase session blob as a generic credential (target
+# `TapeNexus\session`) so access/refresh tokens aren't sitting in a plaintext
+# file. No pip dependency — advapi32 ships on every Windows install. On non
+# Windows (e.g. importing this module on macOS for py_compile) the calls are
+# no-ops that report failure so the caller falls back to the file.
+
+_CRED_TARGET = "TapeNexus\\session"
+_CRED_TYPE_GENERIC = 1
+_CRED_PERSIST_LOCAL_MACHINE = 2
+
+
+def _cred_bindings():
+    """Return (advapi32, CredWriteW, CredReadW, CredDeleteW) or None off-Windows."""
+    if os.name != "nt":
+        return None
+    try:
+        advapi32 = ctypes.WinDLL("advapi32")
+        advapi32.CredWriteW.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        advapi32.CredWriteW.restype = ctypes.c_int
+        advapi32.CredReadW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+        advapi32.CredReadW.restype = ctypes.c_int
+        advapi32.CredDeleteW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
+        advapi32.CredDeleteW.restype = ctypes.c_int
+        return advapi32
+    except Exception:
+        return None
+
+
+class _CREDENTIAL(ctypes.Structure):
+    _fields_ = [
+        ("Flags", ctypes.c_uint32),
+        ("Type", ctypes.c_uint32),
+        ("TargetName", ctypes.c_wchar_p),
+        ("Comment", ctypes.c_wchar_p),
+        ("LastWritten", ctypes.c_uint64),
+        ("CredentialBlobSize", ctypes.c_uint32),
+        ("CredentialBlob", ctypes.c_void_p),
+        ("Persist", ctypes.c_uint32),
+        ("AttributeCount", ctypes.c_uint32),
+        ("Attributes", ctypes.c_void_p),
+        ("TargetAlias", ctypes.c_wchar_p),
+        ("UserName", ctypes.c_wchar_p),
+    ]
+
+
+def _cred_write(blob: str) -> bool:
+    adv = _cred_bindings()
+    if not adv:
+        return False
+    data = blob.encode("utf-16-le")
+    buf = ctypes.create_string_buffer(data, len(data))
+    c = _CREDENTIAL()
+    ctypes.memset(ctypes.byref(c), 0, ctypes.sizeof(c))
+    c.Type = _CRED_TYPE_GENERIC
+    c.TargetName = _CRED_TARGET
+    c.CredentialBlobSize = len(data)
+    c.CredentialBlob = ctypes.cast(buf, ctypes.c_void_p)
+    c.Persist = _CRED_PERSIST_LOCAL_MACHINE
+    c.UserName = "TapeNexus"
+    ok = adv.CredWriteW(ctypes.byref(c), 0) != 0
+    return ok
+
+
+def _cred_read() -> Optional[str]:
+    adv = _cred_bindings()
+    if not adv:
+        return None
+    ptr = ctypes.c_void_p()
+    if adv.CredReadW(_CRED_TARGET, _CRED_TYPE_GENERIC, 0, ctypes.byref(ptr)) == 0:
+        return None
+    try:
+        c = ctypes.cast(ptr, ctypes.POINTER(_CREDENTIAL)).contents
+        size = c.CredentialBlobSize
+        if size == 0:
+            return None
+        raw = (ctypes.c_char * size).from_address(c.CredentialBlob)
+        return bytes(raw).decode("utf-16-le")
+    finally:
+        ctypes.windll.advapi32.CredFree(ptr)
+
+
+def _cred_delete() -> None:
+    adv = _cred_bindings()
+    if not adv:
+        return
+    adv.CredDeleteW(_CRED_TARGET, _CRED_TYPE_GENERIC, 0)
 
 
 def _providers_from_user(user: dict) -> list[str]:

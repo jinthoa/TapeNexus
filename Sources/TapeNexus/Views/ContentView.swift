@@ -8,7 +8,12 @@ struct ContentView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
-        QueueView()
+        TabView {
+            QueueView()
+                .tabItem { Label("Queue", systemImage: "list.bullet") }
+            LibraryView()
+                .tabItem { Label("Library", systemImage: "books.vertical") }
+        }
             .frame(minWidth: 880, minHeight: 580)
             .background(Theme.bg)
             .sheet(isPresented: $state.showSettings) {

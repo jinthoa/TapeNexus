@@ -36,6 +36,8 @@ A quick tour of what's in the box, including the recently added features:
 - **archive.org auto-grab** *(v1.0.15)* — the clipboard host whitelist now includes `archive.org` (alongside YouTube, Vimeo, Twitch, Twitter/X, TikTok, Reddit, Bilibili, and dozens more), so copied archive.org links queue automatically instead of needing a manual paste.
 - **Cloud accounts + achievements** *(v1.0.16)* — an optional **Sign in** button (top-right) opens a unified sign-in / sign-up sheet that auto-detects existing vs new accounts (no mode toggle, like Google). Sign in with **email** or **Google** — macOS uses the system browser via `ASWebAuthenticationSession`, so it reuses your existing Chrome/Google session (no re-typing) and auto-closes when done. When signed in, the button becomes an **avatar** whose popover shows your email, a running tally, the achievements grid, and **Sign out**. Achievements (download milestones, total volume, night-owl/early-bird, …) now surface only here, and only for signed-in users; progress is still recorded locally when signed out.
 - **Link identities** *(v1.0.16)* — signed in with email? Add Google. Signed in with Google? Add an email + password. Both providers map to **one account** so your achievements share a single row — no separate profiles, no merging. The avatar popover shows **Link Google** / **Link email** (or ✓ once linked). Cloud sync is strictly opt-in and gated by `sync.json`; when it's not configured the app stays fully local.
+- **Secure session storage** *(v1.0.18)* — your cloud sign-in session is now stored in the OS keychain (macOS **Keychain** / Windows **Credential Manager**) instead of a plaintext JSON file, so it survives restarts without re-typing and isn't readable by other apps. First launch after upgrade migrates the old file into the keychain and deletes it. If the secure store is unavailable (keychain locked down, Credential Manager refused), it falls back to the file with a one-shot tray warning — never blocks you out.
+- **Persistent Library tab** *(v1.0.18)* — completed downloads are archived into a separate **Library** tab (Queue | Library) that survives "Clear done", so finished downloads stay browseable and re-downloadable instead of vanishing. Each row shows the thumbnail, title, host · size · when, with **Re-download**, **Reveal in Finder/Explorer**, **Open**, and **Remove** actions (and a right-click **Move file to Trash**). Search + sort by Newest / Title / Size / Host. Re-downloading an already-archived video refreshes its row instead of duplicating; the archive is capped at 2,000 (oldest drop off). On first run, your currently-done queue items seed the library so no history is lost.
 - **Subtitle language picker, SponsorBlock, metadata/subtitle embedding**.
 - **Completion notifications + Dock badge** — native notification when a download finishes or fails; Dock badge shows the active count.
 - **Menu-bar mode** — run as a status-bar-only app with no Dock icon.
@@ -48,11 +50,11 @@ A quick tour of what's in the box, including the recently added features:
 ## Download & install
 
 ### macOS
-1. Download **`TapeNexus-1.0.17.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.18.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. **Double-click the `.pkg`** — the macOS Installer opens and walks you through it. It's signed with a Developer ID and notarized by Apple, so Gatekeeper lets it run with no warning, no right-click → Open, no `xattr` step.
 3. Launch from `/Applications`.
 
-   Prefer the terminal? `sudo installer -pkg ~/Downloads/TapeNexus-1.0.17.pkg -target /`
+   Prefer the terminal? `sudo installer -pkg ~/Downloads/TapeNexus-1.0.18.pkg -target /`
 
 ### Windows
 1. Download **`TapeNexus-<ver>-win64.exe`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest) — a single portable executable.
@@ -116,6 +118,7 @@ To install a pkg you built yourself: `sudo installer -pkg build/TapeNexus-<versi
 | `AppUpdater` | Checks GitHub for a newer Tape Nexus `.pkg`; downloads + opens Installer for the app itself (launch check is notify-only). |
 | `SyncManager` | Optional Supabase cloud sync — email + Google auth (raw GoTrue REST + PKCE, no SDK), per-user achievements row upsert/pull-merge, identity linking. Disabled when `sync.json` is empty. |
 | `AchievementsManager` | Tracks download milestones / volume / time-of-day badges; merges server rows on sign-in. |
+| `LibraryStore` | Persistent archive of completed downloads (`library.json`, cap 2000, dedupe by URL) — survives "Clear done"; powers the Library tab. |
 | `Notifier` | Posts macOS user notifications on download completion/failure. |
 | `MenuBarController` | Owns the menu-bar status item for menu-bar mode. |
 | `SettingsStore` | JSON persistence under Application Support. |
@@ -137,10 +140,11 @@ Sources/TapeNexus/
   AppUpdater.swift          app GitHub release self-update (.pkg → Installer)
   SyncManager.swift         optional Supabase auth + achievements sync (raw REST)
   Achievements.swift        achievement definitions + stats tracking
+  LibraryStore.swift        persistent archive of completed downloads (Library tab)
   Notifier.swift            macOS user notifications
   MenuBarController.swift   menu-bar status item
   SettingsStore.swift       JSON persistence
-  Views/                    ContentView, QueueView, SettingsView, AuthView, Theme
+  Views/                    ContentView, QueueView, LibraryView, SettingsView, AuthView, Theme
   Resources/Info.plist
   Resources/sync.json       empty cloud-sync template (real creds in sync.local.json, gitignored)
   Resources/bin/yt-dlp      (universal, downloaded by build.sh)
@@ -181,6 +185,8 @@ Tape Nexus vs. the other yt-dlp GUIs on macOS (Sept 2026):
 | Cross-device sync | ✅ achievements | ✅ (Premium cloud) | ❌ | ❌ | ✅ (iCloud) |
 | Link Google ↔ email identities | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Achievements / badges | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Persistent library / archive | ✅ | ❌ | ❌ | ❌ | ✅ (history) |
+| Secure token storage (keychain) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Trust** | | | | | |
 | Signed + notarized | ✅ | ✅ | ✅ | ❌ | ✅ |
 

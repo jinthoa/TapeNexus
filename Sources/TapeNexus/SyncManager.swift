@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import Combine
 import CommonCrypto
+import Security
 import AuthenticationServices
 
 /// Optional cloud sync: Supabase Auth (email + Google) + a single
@@ -25,6 +26,7 @@ final class SyncManager: ObservableObject {
     private let sessionURL: URL
     private let presenter = WebAuthPresenter()
     private var authSession: ASWebAuthenticationSession?   // retained during Google sign-in
+    private var storageWarned = false   // one-shot: warn once per process if Keychain is denied
 
     /// Returns nil (sync disabled) when no URL/anonKey are configured.
     init?(supportDir: URL) {
@@ -232,8 +234,17 @@ final class SyncManager: ObservableObject {
     // MARK: - Session restore / refresh
 
     private func restoreSession() {
-        guard let data = try? Data(contentsOf: sessionURL),
-              let s = try? JSONDecoder().decode(SyncSession.self, from: data) else { return }
+        // Prefer the Keychain; fall back to the legacy plaintext file and, if
+        // it has a session, migrate it into the Keychain then delete the file.
+        var data = KeychainStore.load()
+        if data == nil, let fileData = try? Data(contentsOf: sessionURL) {
+            data = fileData
+            if let s = try? JSONDecoder().decode(SyncSession.self, from: fileData) {
+                if let enc = try? JSONEncoder().encode(s) { KeychainStore.save(enc) }
+                try? FileManager.default.removeItem(at: sessionURL)
+            }
+        }
+        guard let data, let s = try? JSONDecoder().decode(SyncSession.self, from: data) else { return }
         session = s
         if Date().timeIntervalSince1970 > Double(s.expiresAt) - 60 {
             Task { await refresh() }
@@ -349,8 +360,22 @@ final class SyncManager: ObservableObject {
 
     private func saveSession() {
         guard let s = session,
-              let data = try? JSONEncoder().encode(s) else { try? FileManager.default.removeItem(at: sessionURL); return }
+              let data = try? JSONEncoder().encode(s) else { clearSession(); return }
+        // Try the Keychain first; on denial/lock fall back to the plaintext file
+        // + a one-shot warning so the app keeps working on a misconfigured box.
+        if KeychainStore.save(data) { return }
         try? data.write(to: sessionURL, options: .atomic)
+        if !storageWarned {
+            storageWarned = true
+            Notifier.shared.post(title: "Tape Nexus — secure storage unavailable",
+                                 body: "Couldn't store your session in the Keychain (check Keychain Access). Falling back to an unencrypted file.")
+        }
+    }
+
+    /// Clears every persisted copy of the session (Keychain + legacy file).
+    private func clearSession() {
+        KeychainStore.delete()
+        try? FileManager.default.removeItem(at: sessionURL)
     }
 
     // MARK: - PKCE
@@ -533,5 +558,53 @@ final class WebAuthPresenter: NSObject, ASWebAuthenticationPresentationContextPr
         // Menu-bar-only mode with no visible window: a transient anchor.
         return NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
                         styleMask: [], backing: .buffered, defer: false)
+    }
+}
+
+/// Stores the Supabase session blob (access + refresh tokens) in the macOS
+/// Keychain instead of a plaintext file. One generic-password item under
+/// service `com.bpenven.tapenexus` / account `session`. `save` returns false
+/// when the Keychain refuses (locked / access denied) so the caller can fall
+/// back to the legacy file.
+enum KeychainStore {
+    private static let service = "com.bpenven.tapenexus"
+    private static let account = "session"
+
+    @discardableResult
+    static func save(_ data: Data) -> Bool {
+        // Replace any existing item (upsert): delete then add.
+        delete()
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+
+    static func load() -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return data
+    }
+
+    static func delete() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 }

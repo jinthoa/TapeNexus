@@ -8,11 +8,12 @@ from PySide6.QtGui import QIcon, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
     QPushButton, QButtonGroup, QScrollArea, QSizePolicy, QSystemTrayIcon,
-    QMenu, QMessageBox, QDialog,
+    QMenu, QMessageBox, QDialog, QTabWidget,
 )
 
 from ..models import extract_urls, looks_supported
 from . import theme
+from .library_view import LibraryView
 from .queue_row import QueueRow
 from .settings_dialog import SettingsDialog
 from .update_dialog import UpdateDialog
@@ -45,6 +46,10 @@ class MainWindow(QMainWindow):
         state.settings_changed.connect(self._on_settings_changed)
         state.app_update_available.connect(self._on_update_available)
         state.app_update_done.connect(self._on_update_done)
+        # One-shot tray warning if the Credential Manager refused the session
+        # and we fell back to the plaintext file.
+        if self.state.sync is not None:
+            self.state.sync.storage_warning.connect(self._on_storage_warning)
         self._rebuild_list()
 
         self.setAcceptDrops(True)
@@ -62,8 +67,8 @@ class MainWindow(QMainWindow):
 
     # ── UI ──────────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
-        central = QWidget()
-        root = QVBoxLayout(central)
+        queue_page = QWidget()
+        root = QVBoxLayout(queue_page)
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(10)
 
@@ -146,7 +151,19 @@ class MainWindow(QMainWindow):
         self.empty.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root.addWidget(self.empty)
 
-        self.setCentralWidget(central)
+        # Queue | Library tabs. The queue page holds the full existing UI;
+        # the Library tab is the persistent archive of completed downloads.
+        self.library_view = LibraryView(self.state)
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(
+            f"QTabWidget::pane {{ border: none; background: {theme.BG}; }}"
+            f"QTabBar::tab {{ background: {theme.PANEL}; color: {theme.MUTED};"
+            f" padding: 6px 14px; border-radius: 6px; }}"
+            f"QTabBar::tab:selected {{ background: {theme.ACCENT}; color: #0e1014; font-weight: 600; }}"
+        )
+        self.tabs.addTab(queue_page, "Queue")
+        self.tabs.addTab(self.library_view, "Library")
+        self.setCentralWidget(self.tabs)
         self._refresh_filter_counts()
         self._style_filter_buttons()
 
@@ -214,6 +231,12 @@ class MainWindow(QMainWindow):
         if dlg.exec() == QDialog.Accepted:
             self.state.install_app_update()
             self.statusBar().showMessage("Downloading update…", 4000)
+
+    def _on_storage_warning(self, message: str) -> None:
+        # Emitted once by SyncManager when Credential Manager access failed and
+        # the session fell back to the plaintext file. Surface it on the tray.
+        if self.tray is not None:
+            self.tray.showMessage("Tape Nexus — secure storage unavailable", message)
 
     def _on_update_done(self, ok: bool, message: str) -> None:
         from PySide6.QtWidgets import QApplication

@@ -123,6 +123,9 @@ class DownloadItem:
     # doesn't reset the budget (which would retry forever). Reset on success,
     # manual retry, and fresh add.
     retry_count: int = 0
+    # When the download reached 'done'. Empty until completion. Persisted so the
+    # Library archive has a timestamp even after the queue row is cleared.
+    completed_at: str = ""
 
     # transient (not persisted)
     pid: int = 0

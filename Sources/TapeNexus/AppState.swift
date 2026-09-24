@@ -32,6 +32,9 @@ final class AppState: ObservableObject {
     let menuBar = MenuBarController()
     /// Local download stats + unlocked badges (fun; per-machine for now).
     let achievements: AchievementsManager
+    /// Persistent archive of completed downloads — survives "Clear done".
+    /// Surfaced as the Library tab; snapshotted from finished queue items.
+    let library: LibraryStore
     /// Optional cloud sync (Supabase). nil when sync.json is empty/absent —
     /// the app stays fully local. When configured + signed in, achievements
     /// sync across machines.
@@ -39,6 +42,10 @@ final class AppState: ObservableObject {
 
     // Quiet-hours scheduler state.
     private var quietTimer: DispatchSourceTimer?
+    /// Subscriptions for nested ObservableObjects (LibraryStore) so their
+    /// `objectWillChange` republishes through this AppState and SwiftUI views
+    /// reading `state.library` re-render.
+    private var cancellables = Set<AnyCancellable>()
     private var quietActive: Bool = false
     private var quietPausedIDs: Set<UUID> = []
 
@@ -59,6 +66,7 @@ final class AppState: ObservableObject {
         self.store = store
         self.settings = store.settings
         self.achievements = AchievementsManager(supportDir: store.supportDir)
+        self.library = LibraryStore(supportDir: store.supportDir)
         self.sync = SyncManager(supportDir: store.supportDir)
         let yt = YTDLPController(store: store)
         self.yt = yt
@@ -73,6 +81,16 @@ final class AppState: ObservableObject {
         for i in items.indices where items[i].status == .resolving {
             items[i].status = .queued
         }
+
+        // One-time first-run seed: if there's no library.json yet, import the
+        // currently-done queue items so existing users don't lose their history
+        // the first time they hit "Clear done".
+        library.seed(from: items)
+        // Republish LibraryStore changes through AppState so views reading
+        // `state.library` re-render on archive/remove/delete.
+        library.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
 
         // wire manager + updater
         dm.state = self
