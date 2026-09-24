@@ -36,6 +36,45 @@ def _download(url: str, dest: str) -> None:
     urllib.request.urlretrieve(url, dest)
 
 
+def _prepare_sync() -> str:
+    """Return the path to a `sync.json` to bake into the .exe.
+
+    Precedence (matches the macOS build.sh baking sync.local.json):
+      1. TN_SUPABASE_URL + TN_SUPABASE_ANON_KEY env vars — set on CI from
+         repository secrets. Lets the Windows build ship cloud sync without
+         the gitignored creds ever entering the repo.
+      2. tapenexus/sync.local.json — local dev override (gitignored).
+      3. tapenexus/sync.json — the committed empty template (sync disabled).
+
+    The file is always bundled under the name `sync.json` (PyInstaller keeps
+    the source basename), so sync_manager._bundled_sync_path() — which looks
+    for sync.json in _MEIPASS — finds it. (Previously sync.local.json was
+    bundled under its own name and never matched, so local Windows builds
+    silently shipped with sync disabled.)
+    """
+    import json as _json
+    build_tmp = os.path.join(ROOT, "build_tmp")
+    os.makedirs(build_tmp, exist_ok=True)
+    out = os.path.join(build_tmp, "sync.json")
+
+    env_url = os.environ.get("TN_SUPABASE_URL", "").strip()
+    env_key = os.environ.get("TN_SUPABASE_ANON_KEY", "").strip()
+    if env_url and env_key:
+        print(">> Baking cloud-sync config from TN_SUPABASE_* env (CI secrets)…")
+        with open(out, "w", encoding="utf-8") as fh:
+            _json.dump({"url": env_url, "anonKey": env_key}, fh, indent=2)
+        return out
+
+    local = os.path.join(ROOT, "tapenexus", "sync.local.json")
+    if os.path.isfile(local):
+        print(">> Baking cloud-sync config from gitignored sync.local.json…")
+        shutil.copyfile(local, out)
+        return out
+
+    # Empty template — sync disabled at runtime.
+    return os.path.join(ROOT, "tapenexus", "sync.json")
+
+
 def ensure_binaries() -> None:
     os.makedirs(BIN, exist_ok=True)
     ytdlp = os.path.join(BIN, "yt-dlp.exe")
@@ -75,12 +114,10 @@ def build() -> None:
         # relative --add-data sources against the spec dir (build_tmp), not
         # CWD, so a relative "tapenexus/bin" would not be found.
         "--add-data", os.path.join(ROOT, "tapenexus", "bin") + sep + "bin",
-        # Cloud-sync config (Supabase URL + publishable key). The committed
-        # sync.json is an empty template; bake in gitignored sync.local.json
-        # if present so the key ships but never enters the repo.
-        "--add-data", os.path.join(ROOT, "tapenexus",
-                                   "sync.local.json" if os.path.exists(os.path.join(ROOT, "tapenexus", "sync.local.json"))
-                                   else "sync.json") + sep + ".",
+        # Cloud-sync config (Supabase URL + publishable key). Materialized by
+        # _prepare_sync() from CI secrets / sync.local.json / the empty
+        # template, always bundled as `sync.json` so the runtime finds it.
+        "--add-data", _prepare_sync() + sep + ".",
         "--collect-all", "PySide6",
         "--hidden-import", "PySide6.QtNetwork",
         "--hidden-import", "PySide6.QtWidgets",

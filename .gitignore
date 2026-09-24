@@ -1,5 +1,7 @@
 # Build output
 build/
+windows/build_tmp/
+windows/dist/
 
 # Bundled binaries — fetched on demand by build.sh
 # (yt-dlp macOS standalone + arm64 ffmpeg/ffprobe from martin-riedl.de)

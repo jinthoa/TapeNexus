@@ -53,6 +53,12 @@ jobs:
         working-directory: windows
         env:
           TN_VERSION: ${{ steps.ver.outputs.tag }}
+          # Cloud-sync creds (Supabase publishable key — public-safe, RLS is the
+          # real boundary). When these secrets are set, the .exe ships with
+          # cloud sign-in enabled; when absent, it falls back to the empty
+          # template and sync is disabled.
+          TN_SUPABASE_URL: ${{ secrets.TN_SUPABASE_URL }}
+          TN_SUPABASE_ANON_KEY: ${{ secrets.TN_SUPABASE_ANON_KEY }}
         run: python build.py
 
       - name: Upload asset to release
@@ -62,7 +68,7 @@ jobs:
         working-directory: windows
         run: |
           $tag = $env:TN_VERSION
-          if (-not $tag -or $tag -eq "v") { $tag = "v1.0.15" }
+          if (-not $tag -or $tag -eq "v") { $tag = "v1.0.16" }
           # Create the release if it doesn't already exist; ignore the error if it does.
           gh release create $tag --title "Tape Nexus $tag" --notes "Tape Nexus $tag" 2>$null
           if ($LASTEXITCODE -ne 0) { Write-Host "release $tag already exists" }
