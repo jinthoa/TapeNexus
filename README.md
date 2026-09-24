@@ -9,7 +9,7 @@ A native macOS app that watches your clipboard, queues any URL **yt-dlp supports
 
 Copy a link — Tape Nexus notices it, verifies it's something yt-dlp can actually download (via `--simulate`), and drops it into a queue. You start the downloads when you're ready (auto-start is off by default). Each item shows a thumbnail, title, host, chosen format, live progress, speed, ETA, and byte counts, with per-item pause / resume / stop / retry / reveal / remove / delete. It's a single-window dashboard for grabbing video and audio from the hundreds of sites yt-dlp supports, without ever touching the command line.
 
-`yt-dlp` + `ffmpeg` are bundled, so it works out of the box. Cookies can be pulled from your browser for login-gated content, playlists can be expanded one-item-per-video, and downloads can be organized into per-host folders. A Windows build ships from the same releases as a single portable `.exe`.
+`yt-dlp` + `ffmpeg` are bundled, so it works out of the box. Cookies can be pulled from your browser for login-gated content, playlists can be expanded one-item-per-video, and downloads can be organized into per-host folders. An **optional** cloud account (email or Google) syncs your achievements across machines — the app is fully usable without one. A Windows build ships from the same releases as a single portable `.exe`.
 
 ## Highlights
 
@@ -34,6 +34,8 @@ A quick tour of what's in the box, including the recently added features:
 - **Remux / transcode to a container** *(v1.0.15)* — optionally repack downloaded video into mp4 / mkv / webm / avi / mov / flv with no re-encode (fast, lossless **Remux**) or fully re-encode it via the bundled ffmpeg (**Transcode**). Two mutually-exclusive toggles in Settings share one container picker; audio presets are unaffected.
 - **Stop cleans up partial files** *(v1.0.15)* — stopping an in-progress download now deletes the `.part` file yt-dlp was writing, instead of leaving half-downloaded litter on disk.
 - **archive.org auto-grab** *(v1.0.15)* — the clipboard host whitelist now includes `archive.org` (alongside YouTube, Vimeo, Twitch, Twitter/X, TikTok, Reddit, Bilibili, and dozens more), so copied archive.org links queue automatically instead of needing a manual paste.
+- **Cloud accounts + achievements** *(v1.0.16)* — an optional **Sign in** button (top-right) opens a unified sign-in / sign-up sheet that auto-detects existing vs new accounts (no mode toggle, like Google). Sign in with **email** or **Google** — macOS uses the system browser via `ASWebAuthenticationSession`, so it reuses your existing Chrome/Google session (no re-typing) and auto-closes when done. When signed in, the button becomes an **avatar** whose popover shows your email, a running tally, the achievements grid, and **Sign out**. Achievements (download milestones, total volume, night-owl/early-bird, …) now surface only here, and only for signed-in users; progress is still recorded locally when signed out.
+- **Link identities** *(v1.0.16)* — signed in with email? Add Google. Signed in with Google? Add an email + password. Both providers map to **one account** so your achievements share a single row — no separate profiles, no merging. The avatar popover shows **Link Google** / **Link email** (or ✓ once linked). Cloud sync is strictly opt-in and gated by `sync.json`; when it's not configured the app stays fully local.
 - **Subtitle language picker, SponsorBlock, metadata/subtitle embedding**.
 - **Completion notifications + Dock badge** — native notification when a download finishes or fails; Dock badge shows the active count.
 - **Menu-bar mode** — run as a status-bar-only app with no Dock icon.
@@ -46,11 +48,11 @@ A quick tour of what's in the box, including the recently added features:
 ## Download & install
 
 ### macOS
-1. Download **`TapeNexus-1.0.15.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.16.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. **Double-click the `.pkg`** — the macOS Installer opens and walks you through it. It's signed with a Developer ID and notarized by Apple, so Gatekeeper lets it run with no warning, no right-click → Open, no `xattr` step.
 3. Launch from `/Applications`.
 
-   Prefer the terminal? `sudo installer -pkg ~/Downloads/TapeNexus-1.0.15.pkg -target /`
+   Prefer the terminal? `sudo installer -pkg ~/Downloads/TapeNexus-1.0.16.pkg -target /`
 
 ### Windows
 1. Download **`TapeNexus-<ver>-win64.exe`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest) — a single portable executable.
@@ -82,6 +84,9 @@ The Windows `.exe` is built by GitHub Actions (`.github/workflows/build-windows.
 - **yt-dlp auto-update on launch** — fetches the latest macOS binary from GitHub and atomically swaps it. Can be disabled; manual "Check now" in Settings.
 - **Persistence** — queue + history survive restarts (stored in `~/Library/Application Support/TapeNexus/`). Resolved metadata is cached, so re-copied links don't re-hit the network with `--simulate`.
 - **App self-update** — on launch the app checks GitHub for a newer Tape Nexus release and pops a **Skip** / **Download and install** prompt (macOS downloads the `.pkg` and opens Installer; Windows downloads the new `.exe`, launches it, and quits the old one). A manual "Check now" is also in Settings.
+- **Cloud accounts (optional)** — sign in with **email** or **Google** from the top-right **Sign in** button (unified form auto-detects sign-in vs sign-up). Google sign-in on macOS uses `ASWebAuthenticationSession` so it reuses your default browser's session and auto-closes on completion. Strictly opt-in and gated by `sync.json`; the app is fully local when unconfigured.
+- **Achievements** — badges for download milestones, total volume, night-owl / early-bird, and more. Surfaced in the avatar popover (signed-in only); progress is recorded locally regardless, and synced to your account when signed in.
+- **Link identities** — link Google onto an email account (or set an email + password on a Google account) so both providers map to one user and achievements share a single row. Shown as **Link Google** / **Link email** in the avatar popover.
 - **Universal build** — runs natively on Apple Silicon **and** Intel (arm64 + x86_64 app binary, plus universal `ffmpeg`/`ffprobe`).
 - **PKG installer** — `build.sh` produces a `.pkg` that installs into `/Applications`; universal `ffmpeg` + `ffprobe` are bundled.
 
@@ -109,6 +114,8 @@ To install a pkg you built yourself: `sudo installer -pkg build/TapeNexus-<versi
 | `DownloadManager` | Enforces concurrency; implements pause (SIGSTOP tree) / resume (SIGCONT) / stop (SIGTERM→SIGKILL) / retry / clear / delete. |
 | `Updater` | Checks GitHub releases, downloads `yt-dlp_macos`, atomically swaps the Application Support copy. |
 | `AppUpdater` | Checks GitHub for a newer Tape Nexus `.pkg`; downloads + opens Installer for the app itself (launch check is notify-only). |
+| `SyncManager` | Optional Supabase cloud sync — email + Google auth (raw GoTrue REST + PKCE, no SDK), per-user achievements row upsert/pull-merge, identity linking. Disabled when `sync.json` is empty. |
+| `AchievementsManager` | Tracks download milestones / volume / time-of-day badges; merges server rows on sign-in. |
 | `Notifier` | Posts macOS user notifications on download completion/failure. |
 | `MenuBarController` | Owns the menu-bar status item for menu-bar mode. |
 | `SettingsStore` | JSON persistence under Application Support. |
@@ -128,11 +135,14 @@ Sources/TapeNexus/
   DownloadManager.swift     lifecycle + concurrency + controls
   Updater.swift             yt-dlp GitHub release auto-update
   AppUpdater.swift          app GitHub release self-update (.pkg → Installer)
+  SyncManager.swift         optional Supabase auth + achievements sync (raw REST)
+  Achievements.swift        achievement definitions + stats tracking
   Notifier.swift            macOS user notifications
   MenuBarController.swift   menu-bar status item
   SettingsStore.swift       JSON persistence
-  Views/                    ContentView, QueueView, SettingsView, Theme
+  Views/                    ContentView, QueueView, SettingsView, AuthView, Theme
   Resources/Info.plist
+  Resources/sync.json       empty cloud-sync template (real creds in sync.local.json, gitignored)
   Resources/bin/yt-dlp      (universal, downloaded by build.sh)
   Resources/bin/ffmpeg      (universal, lipo'd by build.sh)
   Resources/bin/ffprobe     (universal, lipo'd by build.sh)
@@ -166,6 +176,11 @@ Tape Nexus vs. the other yt-dlp GUIs on macOS (Sept 2026):
 | Cookies from browser | ✅ | ✅ | ✅ | ❌ | ✅ |
 | SponsorBlock | ✅ | ❌ | ✅ | ❌ | ❌ |
 | App self-update | ✅ app + yt-dlp | ✅ | ✅ yt-dlp | ✅ yt-dlp | ✅ |
+| **Account & sync** | | | | | |
+| Cloud account sign-in (email / Google) | ✅ | ✅ (Premium) | ❌ | ❌ | ❌ |
+| Cross-device sync | ✅ achievements | ✅ (Premium cloud) | ❌ | ❌ | ✅ (iCloud) |
+| Link Google ↔ email identities | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Achievements / badges | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Trust** | | | | | |
 | Signed + notarized | ✅ | ✅ | ✅ | ❌ | ✅ |
 
