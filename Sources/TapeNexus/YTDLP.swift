@@ -560,33 +560,6 @@ final class YTDLPController: @unchecked Sendable {
     // MARK: - Process-tree signals (pause / resume / stop)
 
     func signalTree(_ pid: pid_t, _ sig: Int32) {
-        guard pid > 0 else { return }
-        var all: [pid_t] = [pid]
-        var frontier: [pid_t] = [pid]
-        var depth = 0
-        while !frontier.isEmpty && depth < 6 {
-            var next: [pid_t] = []
-            for p in frontier {
-                next.append(contentsOf: children(of: p))
-            }
-            all.append(contentsOf: next)
-            frontier = next
-            depth += 1
-        }
-        for p in all { kill(p, sig) }
-    }
-
-    private func children(of pid: pid_t) -> [pid_t] {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        p.arguments = ["-P", String(pid)]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = Pipe()
-        do { try p.run() } catch { return [] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        let s = String(data: data, encoding: .utf8) ?? ""
-        return s.split(whereSeparator: { $0.isWhitespace }).compactMap { pid_t($0) }
+        ProcessControl.signalTree(pid, sig)
     }
 }

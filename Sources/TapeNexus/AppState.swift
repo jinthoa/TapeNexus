@@ -29,6 +29,7 @@ final class AppState: ObservableObject {
 
     let store: SettingsStore
     let yt: YTDLPController
+    let galleryDL: GalleryDLController
     let downloads: DownloadManager
     let clipboard = ClipboardMonitor()
     let updater: Updater
@@ -78,7 +79,9 @@ final class AppState: ObservableObject {
         self.sync = SyncManager(supportDir: store.supportDir)
         let yt = YTDLPController(store: store)
         self.yt = yt
-        let dm = DownloadManager(yt: yt)
+        let gdl = GalleryDLController(store: store)
+        self.galleryDL = gdl
+        let dm = DownloadManager(yt: yt, galleryDL: gdl)
         self.downloads = dm
         self.updater = Updater(yt: yt)
 
@@ -114,6 +117,7 @@ final class AppState: ObservableObject {
         // wire manager + updater
         dm.state = self
         yt.ensureBinary()
+        gdl.ensureBinary()
         metaQueue.maxConcurrentOperationCount = max(1, settings.maxConcurrent)
         updater.onStatus = { [weak self] s in self?.updateStatus = s }
         appUpdater.onStatus = { [weak self] s in self?.appUpdateStatus = s }
@@ -352,15 +356,31 @@ final class AppState: ObservableObject {
     }
 
     private func verifySingle(id: UUID, url: String, startImmediately: Bool) {
+        // Pick the engine by host and stamp it on the item so the download
+        // launch dispatches to the right binary. Twitter/X (images + /media)
+        // and Reddit (images / saved) go to gallery-dl; everything else to yt-dlp.
+        let engine = SupportedURLs.engine(for: url)
+        update(id) { $0.engine = engine }
         // Cache hit: a URL we've already resolved this session (or a previous
         // one) is reused without another `--simulate` network call.
         if let cached = store.metaCache[url] {
             applyMeta(id: id, url: url, meta: cached, startImmediately: startImmediately)
             return
         }
-        let ytRef = yt
+        let simRef: AnyObject
+        switch engine {
+        case .galleryDl: simRef = galleryDL
+        case .ytDlp:     simRef = yt
+        }
         metaQueue.addOperation { [weak self] in
-            let result = ytRef.simulate(url)
+            let result: SimulateResult
+            if let g = simRef as? GalleryDLController {
+                result = g.simulate(url)
+            } else if let y = simRef as? YTDLPController {
+                result = y.simulate(url)
+            } else {
+                result = .failed("No download engine available")
+            }
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 guard self.item(id) != nil else { return } // removed meanwhile

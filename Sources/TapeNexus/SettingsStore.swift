@@ -60,6 +60,18 @@ final class SettingsStore: ObservableObject {
             .appendingPathComponent("yt-dlp")
     }()
 
+    /// Application Support home for the bundled gallery-dl binary (the Twitter/X
+    /// + Reddit engine). Mirrors `binURL`; seeded from the app bundle on first
+    /// use by `GalleryDLController.binaryURL`.
+    static let galleryDlBinURL: URL = {
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                 appropriateFor: nil, create: true))
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support")
+        return base.appendingPathComponent(appName, isDirectory: true)
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("gallery-dl")
+    }()
+
     func ensureDestinationExists() {
         try? FileManager.default.createDirectory(atPath: settings.destinationFolder,
                                                  withIntermediateDirectories: true)

@@ -59,6 +59,45 @@ if ! is_universal "$FFMPEG" || ! is_universal "$FFPROBE"; then
 fi
 echo "  ffmpeg bundled: $("$FFMPEG" -version 2>/dev/null | head -1) [$(lipo -archs "$FFMPEG")]"
 
+# ── 1c. Build gallery-dl onefile binary (Twitter/X + Reddit engine) ──────────
+# gallery-dl ships no prebuilt macOS binary, so we PyInstaller-build a onefile
+# from the installed package (mirrors the Windows port's programmatic
+# PyInstaller call). Cached in Resources/bin like yt-dlp. The resulting binary
+# is single-arch (the build host's arch — arm64 here); a universal build would
+# need two per-arch builds lipo'd together. Acceptable for v1: Apple Silicon
+# is the primary target.
+GALLERYDL="$RES/bin/gallery-dl"
+if [[ ! -x "$GALLERYDL" ]]; then
+  echo "▶ Building gallery-dl onefile (PyInstaller)…"
+  GDL_BUILD="$(mktemp -d)"
+  python3 -m venv "$GDL_BUILD/venv"
+  # shellcheck disable=SC1091
+  source "$GDL_BUILD/venv/bin/activate"
+  pip install -q --upgrade pip
+  pip install -q gallery-dl pyinstaller
+  cat > "$GDL_BUILD/entry.py" <<'PY'
+import sys
+from gallery_dl import main
+if __name__ == "__main__":
+    sys.exit(main())
+PY
+  pyinstaller --onefile --name gallery-dl --collect-all gallery_dl \
+    --hidden-import gallery_dl.extractor --hidden-import gallery_dl.postprocessor \
+    --distpath "$GDL_BUILD/dist" --workpath "$GDL_BUILD/work" \
+    --specpath "$GDL_BUILD" \
+    "$GDL_BUILD/entry.py" >/dev/null 2>"$GDL_BUILD/pyi.err"
+  if [[ ! -x "$GDL_BUILD/dist/gallery-dl" ]]; then
+    echo "✖ gallery-dl build failed:" >&2
+    tail -5 "$GDL_BUILD/pyi.err" >&2
+    rm -rf "$GDL_BUILD"
+    exit 1
+  fi
+  cp "$GDL_BUILD/dist/gallery-dl" "$GALLERYDL"
+  chmod +x "$GALLERYDL"
+  rm -rf "$GDL_BUILD"
+fi
+echo "  gallery-dl bundled: $("$GALLERYDL" --version 2>/dev/null | head -1) [$(lipo -archs "$GALLERYDL" 2>/dev/null)]"
+
 # ── 2. Compile Swift sources ─────────────────────────────────────────────────
 echo "▶ Compiling…"
 # Start from a clean build dir. A past `sudo` action can leave root-owned files
@@ -106,6 +145,9 @@ else
 fi
 cp "$YTDLP" "$APP/Contents/Resources/bin/yt-dlp"
 chmod +x "$APP/Contents/Resources/bin/yt-dlp"
+# gallery-dl (Twitter/X + Reddit engine)
+cp "$GALLERYDL" "$APP/Contents/Resources/bin/gallery-dl"
+chmod +x "$APP/Contents/Resources/bin/gallery-dl"
 # ffmpeg + ffprobe (for bestvideo+bestaudio merging)
 cp "$FFMPEG" "$APP/Contents/Resources/bin/ffmpeg"
 cp "$FFPROBE" "$APP/Contents/Resources/bin/ffprobe"
@@ -136,7 +178,7 @@ if [[ -n "$APP_IDENTITY" ]]; then
   # Sign the bundled Mach-O helpers first (innermost-out). They are standalone
   # third-party/frozen binaries, so they get hardened runtime + the permissive
   # helper entitlements (unsigned-exec memory + disabled library validation).
-  for bin in yt-dlp ffmpeg ffprobe; do
+  for bin in yt-dlp gallery-dl ffmpeg ffprobe; do
     codesign --force --options runtime --sign "$APP_IDENTITY" \
       --entitlements "$HELPER_ENT" "$APP/Contents/Resources/bin/$bin"
   done

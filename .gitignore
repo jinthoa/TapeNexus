@@ -26,3 +26,5 @@ windows/tapenexus/sync.local.json
 # Python bytecode (Windows port) — build artifacts, never commit
 __pycache__/
 *.pyc
+# PyInstaller spec files (gallery-dl macOS build) — generated, never commit
+*.spec

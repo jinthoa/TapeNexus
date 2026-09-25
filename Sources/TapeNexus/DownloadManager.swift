@@ -9,9 +9,13 @@ import Darwin
 final class DownloadManager {
     weak var state: AppState?
     let yt: YTDLPController
+    let galleryDL: GalleryDLController
     private let bgQueue = DispatchQueue(label: "tapenexus.downloads", qos: .userInitiated)
 
-    init(yt: YTDLPController) { self.yt = yt }
+    init(yt: YTDLPController, galleryDL: GalleryDLController) {
+        self.yt = yt
+        self.galleryDL = galleryDL
+    }
 
     private func settings() -> AppSettings { state?.store.settings ?? .default }
 
@@ -31,6 +35,12 @@ final class DownloadManager {
     /// stopped download can delete its partial file(s). Populated from the
     /// progress JSON's tmpfilename; cleared on completion / stop / remove.
     private var partFilesByItem: [UUID: [String]] = [:]
+
+    /// Final saved file paths emitted by a gallery-dl download, per active
+    /// item. A Twitter /media or multi-image Reddit post produces many files
+    /// from one queue row; we archive each as its own Library entry. Cleared
+    /// on completion / stop / remove.
+    private var pathsByItem: [UUID: [String]] = [:]
 
     /// Called whenever queue changes; starts queued items up to the limit.
     func pump() {
@@ -61,35 +71,43 @@ final class DownloadManager {
         state.update(item.id) { $0.status = .downloading; $0.progress = 0; $0.speedStr = ""; $0.etaStr = ""; $0.errorMessage = "" }
         let s = settings()
         let id = item.id
-        let pid = yt.startDownload(item: item, settings: s, suppressCookies: suppressCookies,
-            onProgress: { [weak state] p, speed, eta, dl, tot in
-                state?.update(id) {
-                    $0.progress = p; $0.speedStr = speed; $0.etaStr = eta
-                    $0.downloadedBytes = dl; $0.totalBytes = tot
-                }
-            },
-            onFilePath: { [weak state] path in
-                state?.update(id) { $0.outputFilePath = path }
-            },
-            onPartFile: { [weak self] path in
-                // Track the .part file(s) yt-dlp is writing so stop() can clean
-                // them up. Dedupe — multi-stream downloads re-emit per stream.
-                guard let self = self else { return }
-                let existing = self.partFilesByItem[id] ?? []
-                if !existing.contains(path) {
-                    self.partFilesByItem[id] = existing + [path]
-                }
-            },
-            onLog: { [weak state] log in
-                // stash last log line as message context for failed items
-                state?.appendLog(id, line: log)
-            },
-            onComplete: { [weak self, weak state] ok, err in
-                guard let self = self, let state = state else { return }
-                // The download finished (success or failure): the .part file is
-                // gone (renamed to the final file on success), so drop tracking.
-                self.partFilesByItem.removeValue(forKey: id)
-                let finished = state.item(id)
+        let engine = item.engine
+        // Shared callbacks (identical for both engines — the controllers share
+        // one signature). The launch call is dispatched on the item's engine.
+        let onProgress: (Double, String, String, Int64, Int64) -> Void = { [weak state] p, speed, eta, dl, tot in
+            state?.update(id) {
+                $0.progress = p; $0.speedStr = speed; $0.etaStr = eta
+                $0.downloadedBytes = dl; $0.totalBytes = tot
+            }
+        }
+        let onFilePath: (String) -> Void = { [weak self, weak state] path in
+            state?.update(id) { $0.outputFilePath = path }
+            // gallery-dl emits one path per file; a multi-file Twitter/Reddit
+            // post produces many. Track them so completion can archive each as
+            // its own Library entry. (yt-dlp is single-file; no need to track.)
+            guard let self = self, engine == .galleryDl else { return }
+            var arr = self.pathsByItem[id] ?? []
+            if !arr.contains(path) { arr.append(path); self.pathsByItem[id] = arr }
+        }
+        let onPartFile: (String) -> Void = { [weak self] path in
+            // Track the .part file(s) yt-dlp is writing so stop() can clean
+            // them up. Dedupe — multi-stream downloads re-emit per stream.
+            guard let self = self else { return }
+            let existing = self.partFilesByItem[id] ?? []
+            if !existing.contains(path) {
+                self.partFilesByItem[id] = existing + [path]
+            }
+        }
+        let onLog: (String) -> Void = { [weak state] log in
+            // stash last log line as message context for failed items
+            state?.appendLog(id, line: log)
+        }
+        let onComplete: (Bool, String) -> Void = { [weak self, weak state] ok, err in
+            guard let self = self, let state = state else { return }
+            // The download finished (success or failure): the .part file is
+            // gone (renamed to the final file on success), so drop tracking.
+            self.partFilesByItem.removeValue(forKey: id)
+            let finished = state.item(id)
                 // Cookies fallback: if browser cookies were used for this attempt
                 // and yt-dlp failed before any download progress (an extraction-
                 // time failure — typically it couldn't read the browser's cookie
@@ -154,7 +172,21 @@ final class DownloadManager {
                     // Snapshot into the persistent Library archive so the
                     // completed download survives "Clear done" and stays
                     // browseable / re-downloadable from the Library tab.
-                    state.library.archive(it, completedAt: it.completedAt ?? Date())
+                    // A multi-file gallery-dl download (Twitter /media, a
+                    // multi-image post) archives one entry per saved file;
+                    // single-file downloads archive the item's own path.
+                    if it.engine == .galleryDl,
+                       let paths = self.pathsByItem.removeValue(forKey: id),
+                       !paths.isEmpty {
+                        for (i, path) in paths.enumerated() {
+                            state.library.archive(it, filePath: path,
+                                                  entryId: i == 0 ? it.id : UUID(),
+                                                  completedAt: it.completedAt ?? Date())
+                        }
+                    } else {
+                        self.pathsByItem.removeValue(forKey: id)
+                        state.library.archive(it, completedAt: it.completedAt ?? Date())
+                    }
                     let unlocked = state.achievements.recordCompletion(it)
                     let signedIn = state.sync?.isSignedIn ?? false
                     if signedIn {
@@ -170,7 +202,20 @@ final class DownloadManager {
                 }
                 state.refreshBadge()
                 self.pump()
-            })
+        }
+        // Dispatch the launch on the item's engine. Both controllers share the
+        // same callback signature, so the call differs only by receiver.
+        let pid: pid_t
+        switch engine {
+        case .galleryDl:
+            pid = galleryDL.startDownload(item: item, settings: s, suppressCookies: suppressCookies,
+                                          onProgress: onProgress, onFilePath: onFilePath,
+                                          onPartFile: onPartFile, onLog: onLog, onComplete: onComplete)
+        case .ytDlp:
+            pid = yt.startDownload(item: item, settings: s, suppressCookies: suppressCookies,
+                                   onProgress: onProgress, onFilePath: onFilePath,
+                                   onPartFile: onPartFile, onLog: onLog, onComplete: onComplete)
+        }
         if pid > 0 {
             state.update(item.id) { $0.pid = pid }
         }
@@ -181,7 +226,7 @@ final class DownloadManager {
     func pause(_ id: UUID) {
         guard let state = state, let item = state.item(id) else { return }
         guard item.status == .downloading else { return }
-        yt.signalTree(item.pid, SIGSTOP)
+        ProcessControl.signalTree(item.pid, SIGSTOP)
         state.update(id) { $0.status = .paused; $0.pausedByUser = true }
         state.persist()
     }
@@ -189,29 +234,31 @@ final class DownloadManager {
     func resume(_ id: UUID) {
         guard let state = state, let item = state.item(id) else { return }
         guard item.status == .paused else { return }
-        yt.signalTree(item.pid, SIGCONT)
+        ProcessControl.signalTree(item.pid, SIGCONT)
         state.update(id) { $0.status = .downloading; $0.pausedByUser = false }
     }
 
     func stop(_ id: UUID) {
         guard let state = state, let item = state.item(id) else { return }
         guard item.status == .downloading || item.status == .paused else { return }
-        yt.signalTree(item.pid, SIGTERM)
-        // escalate to SIGKILL after grace (capture only Sendable bits)
+        ProcessControl.signalTree(item.pid, SIGTERM)
+        // escalate to SIGKILL after grace
         let pid = item.pid
-        let ytRef = yt
         bgQueue.asyncAfter(deadline: .now() + 3) {
-            ytRef.signalTree(pid, SIGKILL)
+            ProcessControl.signalTree(pid, SIGKILL)
         }
         state.update(id) { $0.status = .stopped; $0.pid = 0 }
         state.persist()
-        // Delete the partial .part file(s) yt-dlp was writing so a stopped
+        // Delete the partial .part file(s) the engine was writing so a stopped
         // download doesn't leave disk litter. Unix allows unlinking a file that
         // is still open (freed once the dying process closes it), so removing
-        // immediately is safe even before SIGKILL lands.
+        // immediately is safe even before SIGKILL lands. (gallery-dl's .part
+        // paths aren't tracked 1:1, so this mainly covers yt-dlp; gallery-dl
+        // cleans its own .part on a graceful SIGTERM.)
         if let parts = partFilesByItem.removeValue(forKey: id), !parts.isEmpty {
             for p in parts { try? FileManager.default.removeItem(atPath: p) }
         }
+        pathsByItem.removeValue(forKey: id)
     }
 
     func retry(_ id: UUID) {
@@ -372,6 +419,7 @@ final class DownloadManager {
             stop(id)
         } else {
             partFilesByItem.removeValue(forKey: id)
+            pathsByItem.removeValue(forKey: id)
         }
         state.removeItem(id)
         state.persist()

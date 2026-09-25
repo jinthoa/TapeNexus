@@ -64,4 +64,27 @@ enum SupportedURLs {
         for h in hosts where clean.hasSuffix("." + h) { return true }
         return false
     }
+
+    /// Hosts routed to the gallery-dl engine. yt-dlp handles Twitter video
+    /// tweets but NOT tweet images or the X /media tab (login redirect), and
+    /// only Reddit video — so images, the /media tab, and Reddit saved posts
+    /// go through gallery-dl, which reads the same browser cookies. v.redd.it
+    /// (raw CDN video) stays on yt-dlp.
+    private static let galleryDLHosts: Set<String> = [
+        "twitter.com", "x.com", "mobile.twitter.com",
+        "reddit.com", "old.reddit.com", "redd.it",
+    ]
+
+    /// Resolve which engine should handle a URL, by host. Used at verify time
+    /// to pick the simulator and at launch time to pick the downloader.
+    static func engine(for url: String) -> DownloadEngine {
+        guard let comps = URLComponents(string: url),
+              let host = comps.host?.lowercased() else { return .ytDlp }
+        let clean = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        if galleryDLHosts.contains(clean) || galleryDLHosts.contains(host) {
+            return .galleryDl
+        }
+        // subdomain match (e.g. i.redd.it is NOT gallery-dl; only exact + www)
+        return .ytDlp
+    }
 }

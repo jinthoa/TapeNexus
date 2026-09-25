@@ -4,6 +4,15 @@ enum DownloadStatus: String, Codable, CaseIterable {
     case resolving, queued, downloading, paused, done, failed, stopped
 }
 
+/// Which bundled engine drives a download. yt-dlp is the default and handles
+/// the broad video catalog; gallery-dl is routed in for hosts yt-dlp can't do
+/// well — Twitter/X images + the /media tab, and Reddit images/saved posts.
+/// Persisted on DownloadItem so a restarted queue re-dispatches correctly.
+enum DownloadEngine: String, Codable, CaseIterable {
+    case ytDlp
+    case galleryDl
+}
+
 /// Segmented filter for the unified download list (approach A: one page, no
 /// sidebar, no separate History). Done/failed/stopped stay in the same list
 /// and are revealed by switching filter; "Clear done" removes them.
@@ -67,6 +76,11 @@ struct DownloadItem: Identifiable, Codable, Hashable {
     // manual retry, and fresh add.
     var retryCount: Int = 0
 
+    // v1.0.22: which engine drives this download. Defaults to yt-dlp so queues
+    // persisted by older builds load unchanged. yt-dlp-specific overrides
+    // (formatPreset/customFormat/clipStart/clipEnd) are ignored when galleryDl.
+    var engine: DownloadEngine = .ytDlp
+
     // transient (not Codable)
     var pid: pid_t = 0
     /// True once we've already retried this item without browser cookies after
@@ -86,7 +100,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
              formatPreset, customFormat, clipStart, clipEnd,
              startAt,
              retryCount,
-             completedAt
+             completedAt,
+             engine
     }
 
     init(id: UUID = UUID(), url: String, title: String = "", uploader: String = "",
@@ -99,7 +114,8 @@ struct DownloadItem: Identifiable, Codable, Hashable {
          clipStart: String = "", clipEnd: String = "",
          startAt: Date? = nil,
          retryCount: Int = 0,
-         completedAt: Date? = nil) {
+         completedAt: Date? = nil,
+         engine: DownloadEngine = .ytDlp) {
         self.id = id; self.url = url; self.title = title; self.uploader = uploader
         self.thumbnailURL = thumbnailURL; self.durationStr = durationStr
         self.status = status; self.progress = progress; self.speedStr = speedStr
@@ -112,6 +128,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         self.startAt = startAt
         self.retryCount = retryCount
         self.completedAt = completedAt
+        self.engine = engine
     }
 
     private init(fromCore dec: Decoder) throws {
@@ -140,6 +157,7 @@ struct DownloadItem: Identifiable, Codable, Hashable {
         startAt = try c.decodeIfPresent(Date.self, forKey: .startAt)
         retryCount = try c.decodeIfPresent(Int.self, forKey: .retryCount) ?? 0
         completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
+        engine = try c.decodeIfPresent(DownloadEngine.self, forKey: .engine) ?? .ytDlp
     }
     init(from decoder: Decoder) throws { try self.init(fromCore: decoder) }
 

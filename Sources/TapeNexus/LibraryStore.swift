@@ -101,16 +101,25 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - Mutations
 
-    /// Archive a finished download. Dedupes by URL (a re-download of an
-    /// already-archived video refreshes the existing row instead of adding a
-    /// duplicate), then enforces the cap (oldest by `completedAt` drop off).
+    /// Archive a finished download (single-file). Dedupes by URL+path: a
+    /// re-download of the same file refreshes the existing row instead of
+    /// adding a duplicate. Delegates to the per-file core.
     func archive(_ item: DownloadItem, completedAt: Date = Date()) {
+        archive(item, filePath: item.outputFilePath, entryId: item.id, completedAt: completedAt)
+    }
+
+    /// Archive one file of a (possibly multi-file) download. A Twitter /media
+    /// or multi-image Reddit post produces many files from one queue item;
+    /// each is archived as its own Library entry sharing the source URL but
+    /// with its own `filePath` + `entryId`. Dedupes by (URL, filePath) so a
+    /// re-download refreshes the same rows rather than duplicating them.
+    func archive(_ item: DownloadItem, filePath: String, entryId: UUID, completedAt: Date = Date()) {
         let entry = LibraryEntry(
-            id: item.id, url: item.url, title: item.title, uploader: item.uploader,
+            id: entryId, url: item.url, title: item.title, uploader: item.uploader,
             thumbnailURL: item.thumbnailURL, durationStr: item.durationStr,
             formatDesc: item.formatDesc, totalBytes: item.totalBytes,
-            outputFilePath: item.outputFilePath, completedAt: completedAt)
-        if let idx = entries.firstIndex(where: { $0.url == item.url }) {
+            outputFilePath: filePath, completedAt: completedAt)
+        if let idx = entries.firstIndex(where: { $0.url == item.url && $0.outputFilePath == filePath }) {
             entries[idx] = entry
         } else {
             entries.insert(entry, at: 0)
