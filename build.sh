@@ -194,6 +194,7 @@ fi
 exit 0
 SH
 chmod +x "$SCRIPTS/preinstall" "$SCRIPTS/postinstall"
+find "$SCRIPTS" -name '._*' -delete 2>/dev/null || true
 
 COMPONENT_PKG="$BUILD/TapeNexus.component.pkg"
 pkgbuild \
@@ -203,6 +204,24 @@ pkgbuild \
   --version "$VERSION" \
   --scripts "$SCRIPTS" \
   "$COMPONENT_PKG"
+
+# pkgbuild archives the Scripts dir with an xattr-preserving cpio that emits
+# AppleDouble `._preinstall`/`._postinstall` sidecars (modern macOS stamps
+# every file with a non-removable com.apple.provenance xattr that cpio keeps
+# as `._` companions). Those stray non-executable entries in the Scripts
+# archive make the GUI Installer.app fail right after authentication on some
+# macOS versions (the CLI `installer` tolerates them). Plain `cpio` does NOT
+# emit them, so re-create the Scripts archive cleanly and re-pack the xar.
+COMP_XAR="$BUILD/comp_xar"
+rm -rf "$COMP_XAR"
+mkdir -p "$COMP_XAR"
+( cd "$COMP_XAR" && xar -x -f "$COMPONENT_PKG" )
+if [[ -f "$COMP_XAR/Scripts" ]]; then
+  ( cd "$SCRIPTS" && find . -print0 | cpio -o -0 -H newc 2>/dev/null | gzip > "$COMP_XAR/Scripts" )
+  rm -f "$COMPONENT_PKG"
+  ( cd "$COMP_XAR" && xar -c -f "$COMPONENT_PKG" . )
+fi
+rm -rf "$COMP_XAR"
 
 DIST="$BUILD/Distribution.xml"
 cat > "$DIST" <<XML
