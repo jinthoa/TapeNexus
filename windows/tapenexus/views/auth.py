@@ -7,8 +7,8 @@ now surfaced only here (i.e. only for signed-in users).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QPoint, QPointF, QTimer
-from PySide6.QtGui import QPainter, QColor, QPen, QRectF
+from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, Signal, Slot
+from PySide6.QtGui import QPainter, QColor, QPen
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout,
     QGridLayout, QDialog, QMenu, QWidgetAction, QFrame,
@@ -212,10 +212,12 @@ class SignInDialog(QDialog):
         # One-form auto-detect: sign in, or create the account if it's new.
         self.sync.sign_in_or_sign_up(email, password)
 
+    @Slot(bool)
     def _on_done(self, ok: bool) -> None:
         if ok:
             # Merge any server-side progress, then close. pull_and_merge is a
             # no-op if not signed in and marshals the merge onto the GUI thread.
+            self.state.achievements.activate_user(self.sync.user_id)
             self.sync.pull_and_merge(self.state.achievements)
             self.password.setText("")
             self._set_busy(False)
@@ -223,6 +225,7 @@ class SignInDialog(QDialog):
         else:
             self._set_busy(False)
 
+    @Slot(str)
     def _on_error(self, msg: str) -> None:
         self.error.setText(msg)
         self._set_busy(False)
@@ -280,9 +283,11 @@ class AccountControl(QWidget):
         self.signin_btn.setVisible(not signed_in)
         self.avatar_btn.setVisible(signed_in)
 
+    @Slot(bool)
     def _on_signed_in_changed(self, signed_in: bool) -> None:
         self._apply_state(signed_in)
 
+    @Slot(str)
     def _on_email_changed(self, email: str) -> None:
         self.avatar_btn.setText(_initial(email))
 
@@ -509,6 +514,7 @@ class SetPasswordDialog(QDialog):
         self._set_busy(True)
         self.sync.set_password(p)
 
+    @Slot(bool)
     def _on_done(self, ok: bool) -> None:
         if ok:
             self._set_busy(False)
@@ -516,6 +522,7 @@ class SetPasswordDialog(QDialog):
         else:
             self._set_busy(False)
 
+    @Slot(str)
     def _on_error(self, msg: str) -> None:
         self.error.setText(msg)
         self._set_busy(False)
@@ -531,8 +538,11 @@ class LeaderboardDialog(QDialog):
     highlighted). Opting in exposes only display_name/score/total_completed via
     the `leaderboard` view — full stats stay private."""
 
+    loaded_signal = Signal(object, object, object, object)
+
     def __init__(self, state, parent=None) -> None:
         super().__init__(parent)
+        self.loaded_signal.connect(self._loaded)
         self.state = state
         self.sync = state.sync
         self.ach = state.achievements
@@ -694,11 +704,12 @@ class LeaderboardDialog(QDialog):
             entries = self.sync.fetch_leaderboard()
             rank = self.sync.fetch_my_rank(score)
             above, below = self.sync.fetch_near_me(score)
-            QTimer.singleShot(0, lambda: self._loaded(entries, rank, above, below))
+            self.loaded_signal.emit(entries, rank, above, below)
 
         import threading
         threading.Thread(target=work, daemon=True).start()
 
+    @Slot(object, object, object, object)
     def _loaded(self, entries: list, rank, above: list, below: list) -> None:
         self._entries, self._rank = entries, rank
         self._near_above, self._near_below = above, below
@@ -780,7 +791,7 @@ class LeaderboardDialog(QDialog):
     def _save(self) -> None:
         name = self.name_edit.text().strip()
         opt = self.opt_in.isChecked()
-        if not opt or not name:
+        if opt and not name:
             return
         self.save_btn.setEnabled(False)
         self.ach.set_leaderboard_profile(name, opt)

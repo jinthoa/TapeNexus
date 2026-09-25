@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QIcon, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
@@ -229,18 +229,21 @@ class MainWindow(QMainWindow):
         self._rebuild_list()
 
     # ── app self-update popup ───────────────────────────────────────────────
+    @Slot(str, str)
     def _on_update_available(self, latest_tag: str, exe_url: str) -> None:
         dlg = UpdateDialog(latest_tag, self)
         if dlg.exec() == QDialog.Accepted:
             self.state.install_app_update()
             self.statusBar().showMessage("Downloading update…", 4000)
 
+    @Slot(str)
     def _on_storage_warning(self, message: str) -> None:
         # Emitted once by SyncManager when Credential Manager access failed and
         # the session fell back to the plaintext file. Surface it on the tray.
         if self.tray is not None:
             self.tray.showMessage("Tape Nexus — secure storage unavailable", message)
 
+    @Slot(bool, str)
     def _on_update_done(self, ok: bool, message: str) -> None:
         from PySide6.QtWidgets import QApplication
         if ok:

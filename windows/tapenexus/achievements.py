@@ -396,26 +396,79 @@ class AchievementsManager:
 
     def __init__(self, support_dir: str) -> None:
         self._path = os.path.join(support_dir, "achievements.json")
-        self.stats = self._load()
+        self._profiles: dict[str, AchievementStats] = {}
+        self._legacy: Optional[AchievementStats] = None
+        self._active_user: Optional[str] = None
+        self.stats = AchievementStats()
+        self._load_store()
 
-    def _load(self) -> AchievementStats:
+    def _load_store(self) -> None:
         try:
             with open(self._path, "r", encoding="utf-8") as fh:
-                return AchievementStats.from_dict(json.load(fh))
+                raw = json.load(fh)
+            if isinstance(raw, dict) and raw.get("version") == 2 and isinstance(raw.get("profiles"), dict):
+                self._profiles = {
+                    str(uid): AchievementStats.from_dict(value)
+                    for uid, value in raw["profiles"].items()
+                    if isinstance(value, dict)
+                }
+                legacy = raw.get("legacy")
+                self._legacy = AchievementStats.from_dict(legacy) if isinstance(legacy, dict) else None
+            elif isinstance(raw, dict):
+                # v1 stored one unscoped profile. Claim it once, when the first
+                # authenticated user is activated, rather than copying it into
+                # every account that signs in on this installation.
+                self._legacy = AchievementStats.from_dict(raw)
         except Exception:
-            return AchievementStats()
+            self._profiles = {}
+            self._legacy = None
+
+    def activate_user(self, user_id: Optional[str]) -> None:
+        """Switch the visible/persisted stats to one authenticated user.
+
+        Signed-out state is intentionally blank and is never persisted. This
+        prevents one person's local activity and leaderboard consent from being
+        uploaded when a different account signs in on the same machine.
+        """
+        if self._active_user:
+            self._profiles[self._active_user] = self.stats
+        self._active_user = user_id or None
+        if not self._active_user:
+            self.stats = AchievementStats()
+            return
+        if self._active_user not in self._profiles:
+            self._profiles[self._active_user] = self._legacy or AchievementStats()
+            self._legacy = None
+        self.stats = self._profiles[self._active_user]
+        self.save()
 
     def reload(self) -> None:
         """Re-read achievements.json from disk. Used after a backup restore so
         a later _save() can't clobber the restored file with old stats."""
-        self.stats = self._load()
+        active = self._active_user
+        self._profiles = {}
+        self._legacy = None
+        self._load_store()
+        self._active_user = None
+        self.activate_user(active)
 
-    def _save(self) -> None:
+    def save(self) -> None:
+        if not self._active_user:
+            return
+        self._profiles[self._active_user] = self.stats
+        payload = {
+            "version": 2,
+            "legacy": self._legacy.to_dict() if self._legacy else None,
+            "profiles": {uid: stats.to_dict() for uid, stats in self._profiles.items()},
+        }
         try:
             with open(self._path, "w", encoding="utf-8") as fh:
-                json.dump(self.stats.to_dict(), fh, indent=2, sort_keys=True)
+                json.dump(payload, fh, indent=2, sort_keys=True)
         except Exception:
             pass
+
+    def _save(self) -> None:
+        self.save()
 
     @property
     def formatted_total_bytes(self) -> str:

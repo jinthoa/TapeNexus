@@ -27,6 +27,11 @@ final class SyncManager: ObservableObject {
     private let presenter = WebAuthPresenter()
     private var authSession: ASWebAuthenticationSession?   // retained during Google sign-in
     private var storageWarned = false   // one-shot: warn once per process if Keychain is denied
+    /// Full-row upserts must be ordered: an older request finishing last would
+    /// otherwise roll cloud progress backwards. While one request is running,
+    /// queue later snapshots in invocation order.
+    private var achievementPushInFlight = false
+    private var pendingAchievementPushes: [(row: [String: Any], token: String)] = []
 
     /// Returns nil (sync disabled) when no URL/anonKey are configured.
     init?(supportDir: URL) {
@@ -314,11 +319,23 @@ final class SyncManager: ObservableObject {
     func pushAchievements(_ stats: AchievementStats) async {
         guard let s = session else { return }
         guard let row = Self.achievementRow(for: s.user.id, stats: stats) else { return }
+        pendingAchievementPushes.append((row, s.accessToken))
+        guard !achievementPushInFlight else { return }
+        achievementPushInFlight = true
+        defer { achievementPushInFlight = false }
+
+        while !pendingAchievementPushes.isEmpty {
+            let pending = pendingAchievementPushes.removeFirst()
+            await performAchievementPush(row: pending.row, token: pending.token)
+        }
+    }
+
+    private func performAchievementPush(row: [String: Any], token: String) async {
         var req = URLRequest(url: URL(string: "\(url)/rest/v1/achievements?on_conflict=user_id")!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
-        req.setValue("Bearer \(s.accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         // Upsert: merge on conflict, return the resulting row.
         req.setValue("return=representation,resolution=merge-duplicates",
                      forHTTPHeaderField: "Prefer")
@@ -330,6 +347,7 @@ final class SyncManager: ObservableObject {
     /// push the merged snapshot back so other devices converge.
     func pullAndMerge(into manager: AchievementsManager) async {
         guard let s = session else { return }
+        let requestedUserID = s.user.id
         var req = URLRequest(url: URL(string: "\(url)/rest/v1/achievements?select=*&limit=1")!)
         req.httpMethod = "GET"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -338,6 +356,9 @@ final class SyncManager: ObservableObject {
               let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
               let row = rows.first,
               let remote = Self.stats(from: row) else { return }
+        // The user may have signed out or switched accounts while this request
+        // was in flight. Never merge one account's row into another profile.
+        guard session?.user.id == requestedUserID else { return }
         manager.merge(remote)
         await pushAchievements(manager.stats)
     }

@@ -248,9 +248,19 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Backup", "Couldn't write the backup file.")
 
     def _import_backup(self) -> None:
+        if not self.state.can_restore_backup():
+            QMessageBox.warning(
+                self, "Restore", "Stop active downloads before restoring a backup.")
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Restore backup", "", "JSON (*.json)")
         if not path:
+            return
+        # The native picker yields the event loop, so a deferred launch may
+        # have started while it was open. Recheck immediately before writing.
+        if not self.state.can_restore_backup():
+            QMessageBox.warning(
+                self, "Restore", "Stop active downloads before restoring a backup.")
             return
         try:
             with open(path, "rb") as f:
@@ -264,8 +274,7 @@ class SettingsDialog(QDialog):
             return
         # Pull restored files into the live managers so a later save can't
         # clobber them with pre-restore state before the restart.
-        self.state.library.reload()
-        self.state.achievements.reload()
+        self.state.reload_restored_state()
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Question)
         box.setWindowTitle("Restore")
@@ -280,6 +289,10 @@ class SettingsDialog(QDialog):
             QProcess.startDetached(sys.executable, [])
             from PySide6.QtWidgets import QApplication
             QApplication.quit()
+        else:
+            # Prevent stale controls in this pre-restore dialog from later
+            # saving over the settings that were just restored.
+            self.accept()
 
     @staticmethod
     def _reveal(path: str) -> None:

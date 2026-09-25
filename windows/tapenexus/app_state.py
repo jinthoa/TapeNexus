@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import psutil
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QTimer, Signal, Slot
 
 from .achievements import Achievement, AchievementsManager
 from .clipboard_monitor import ClipboardMonitor
@@ -142,6 +142,12 @@ class AppState(QObject):
     app_update_done = Signal(bool, str)
     # Post-download media tools: transient status banner text (or "" to clear).
     media_tool_status = Signal(str)
+    simulate_ready = Signal(int, str, str, object, bool)
+    playlist_ready = Signal(int, str, str, object, bool)
+    subscription_ready = Signal(object)
+    formats_ready = Signal(int, str, object)
+    update_check_ready = Signal(str, str)
+    update_install_ready = Signal(bool, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -151,6 +157,7 @@ class AppState(QObject):
         self.achievements = AchievementsManager(_appdata_dir())
         # Optional cloud sync (Supabase). Stays local-only when unconfigured.
         self.sync = SyncManager(_appdata_dir())
+        self.sync.signed_in_changed.connect(self._on_sync_state_changed)
         # Persistent archive of completed downloads — survives "Clear done".
         # Surfaced as the Library tab; snapshotted from finished queue items.
         self.library = LibraryManager(_appdata_dir())
@@ -170,6 +177,7 @@ class AppState(QObject):
         self.formats_error: Dict[str, str] = {}
 
         self._workers: Dict[str, DownloadWorker] = {}
+        self._attempt_tokens: Dict[str, object] = {}
         self._tray = None
         self._quiet_timer = QTimer(self)
         self._quiet_timer.timeout.connect(self._quiet_tick)
@@ -195,18 +203,28 @@ class AppState(QObject):
         # token so a pending QTimer.singleShot knows it was cancelled and skips
         # the launch. Transient — not persisted.
         self._launch_tokens: Dict[str, object] = {}
+        # Rotated when a backup restore replaces queue/settings. Worker results
+        # captured under an older generation are discarded.
+        self._state_generation = 0
 
         self._load()
         # One-time first-run seed: if there's no library.json yet, import the
         # currently-done queue items so existing users don't lose their history
         # the first time they hit "Clear done".
         self.library.seed(self.items)
-        # Count this launch for the secret launch-based achievements. Silent —
-        # no unlock notification at startup, the badges just appear in the popup.
-        self.achievements.record_launch()
+        self.achievements.activate_user(
+            self.sync.user_id if self.sync.is_signed_in else None)
+        if self.sync.is_signed_in:
+            self.achievements.record_launch()
         self._meta_pool = ThreadPoolExecutor(
             max_workers=max(1, self.settings.max_concurrent),
             thread_name_prefix="tn-meta")
+        self.simulate_ready.connect(self._on_simulate_done)
+        self.playlist_ready.connect(self._on_playlist_done)
+        self.subscription_ready.connect(self._on_subscription_ready)
+        self.formats_ready.connect(self._on_formats_done)
+        self.update_check_ready.connect(self._on_update_available)
+        self.update_install_ready.connect(self._on_update_install_ready)
 
         # wire clipboard
         self.clipboard.enabled = self.settings.auto_grab_clipboard
@@ -242,6 +260,10 @@ class AppState(QObject):
     def _appdata_file(self, name: str) -> str:
         return os.path.join(_appdata_dir(), name)
 
+    @Slot(bool)
+    def _on_sync_state_changed(self, signed_in: bool) -> None:
+        self.achievements.activate_user(self.sync.user_id if signed_in else None)
+
     def _load(self) -> None:
         try:
             with open(self._appdata_file("settings.json"), "r", encoding="utf-8") as f:
@@ -253,8 +275,17 @@ class AppState(QObject):
         try:
             with open(self._appdata_file("queue.json"), "r", encoding="utf-8") as f:
                 snap = json.load(f)
-            self.items = [DownloadItem.from_dict(d) for d in snap.get("queue", [])
-                          if d.get("status") not in ("downloading", "paused")]
+            self.items = []
+            for raw in snap.get("queue", []):
+                item = DownloadItem.from_dict(raw)
+                if item.status in ("downloading", "paused", "resolving"):
+                    item.status = "stopped"
+                    item.pid = 0
+                    item.speed_str = ""
+                    item.eta_str = ""
+                item.launch_scheduled = False
+                item.launch_at_ts = 0.0
+                self.items.append(item)
             self.meta_cache = snap.get("meta", {}) or {}
         except Exception:
             self.items, self.meta_cache = [], {}
@@ -278,6 +309,34 @@ class AppState(QObject):
                 json.dump(snap, f, indent=2)
         except Exception:
             pass
+
+    def can_restore_backup(self) -> bool:
+        return not any(it.status in ("downloading", "paused", "resolving")
+                       for it in self.items)
+
+    def reload_restored_state(self) -> None:
+        """Reload every state file covered by a backup into live memory."""
+        self._launch_tokens.clear()
+        self._last_start_at = None
+        self._burst_remaining = 0
+        for item in self.items:
+            item.launch_scheduled = False
+            item.launch_at_ts = 0.0
+        self._state_generation += 1
+        self._load()
+        self.library.reload()
+        self.achievements.reload()
+        old = self._meta_pool
+        self._meta_pool = ThreadPoolExecutor(
+            max_workers=max(1, self.settings.max_concurrent),
+            thread_name_prefix="tn-meta")
+        if old is not None:
+            old.shutdown(wait=False, cancel_futures=True)
+        self.clipboard.enabled = self.settings.auto_grab_clipboard
+        self.clipboard.set_interval(getattr(self.settings, "poll_interval_seconds", 1.2))
+        self.clipboard.start()
+        self.settings_changed.emit()
+        self.list_changed.emit()
 
     def set_tray(self, tray) -> None:
         self._tray = tray
@@ -406,25 +465,32 @@ class AppState(QObject):
         known = set(sub.known_urls)
         first_check = not sub.known_urls
         preset = sub.preset
+        generation = self._state_generation
 
         def work() -> None:
             entries = self.yt.simulate_playlist(url, 200) or []
-            entry_set = set(entries)
             new_urls = [u for u in entries if u not in known]
-            def done() -> None:
-                self.subscriptions.update(
-                    sub_id, known_urls=entries,
-                    last_checked_at=datetime.now().isoformat(),
-                    last_new_count=0 if first_check else len(new_urls))
-                if not first_check:
-                    for u in new_urls:
-                        if not any(it.url == u for it in self.items):
-                            self.add_candidate(u, start_immediately=True, preset=preset)
-                    if new_urls:
-                        self.achievements.record_playlist_expansion()
-            QTimer.singleShot(0, done)
+            if self._state_generation is generation:
+                self.subscription_ready.emit(
+                    (generation, sub_id, entries, new_urls, first_check, preset))
 
         threading.Thread(target=work, daemon=True).start()
+
+    @Slot(object)
+    def _on_subscription_ready(self, payload) -> None:
+        generation, sub_id, entries, new_urls, first_check, preset = payload
+        if generation != self._state_generation:
+            return
+        self.subscriptions.update(
+            sub_id, known_urls=entries,
+            last_checked_at=datetime.now().isoformat(),
+            last_new_count=0 if first_check else len(new_urls))
+        if not first_check:
+            for url in new_urls:
+                if not any(it.url == url for it in self.items):
+                    self.add_candidate(url, start_immediately=True, preset=preset)
+            if new_urls and self.sync.is_signed_in:
+                self.achievements.record_playlist_expansion()
 
     def check_all_subscriptions(self) -> None:
         """Check every enabled subscription whose interval has elapsed (or that
@@ -456,21 +522,28 @@ class AppState(QObject):
         if cached:
             self._apply_meta(item_id, url, cached, start)
             return
+        generation = self._state_generation
         def work():
             result = self.yt.simulate(url)
-            QTimer.singleShot(0, lambda: self._on_simulate_done(item_id, url, result, start))
+            if self._state_generation is generation:
+                self.simulate_ready.emit(generation, item_id, url, result, start)
         # Bounded pool: no more than max_concurrent metadata probes in flight,
         # so a playlist / batch-paste can't burst the source site.
         self._meta_pool.submit(work)
 
     def _verify_playlist(self, item_id: str, url: str, start: bool) -> None:
         cap = self.settings.playlist_cap
+        generation = self._state_generation
         def work():
             entries = self.yt.simulate_playlist(url, cap)
-            QTimer.singleShot(0, lambda: self._on_playlist_done(item_id, url, entries, start))
+            if self._state_generation is generation:
+                self.playlist_ready.emit(generation, item_id, url, entries, start)
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_simulate_done(self, item_id, url, result, start) -> None:
+    @Slot(int, str, str, object, bool)
+    def _on_simulate_done(self, generation, item_id, url, result, start) -> None:
+        if generation != self._state_generation:
+            return
         if self.item(item_id) is None:
             return
         kind = result[0]
@@ -488,7 +561,10 @@ class AppState(QObject):
             self.update(item_id, status="failed", error_message=result[1])
             self._persist_queue()
 
-    def _on_playlist_done(self, item_id, url, entries, start) -> None:
+    @Slot(int, str, str, object, bool)
+    def _on_playlist_done(self, generation, item_id, url, entries, start) -> None:
+        if generation != self._state_generation:
+            return
         if self.item(item_id) is None:
             return
         if entries and len(entries) > 1:
@@ -498,8 +574,8 @@ class AppState(QObject):
             self._remove(item_id)
             self.add_many(entries, start_immediately=start)
             # Achievements: a playlist was expanded into the queue.
-            unlocked = self.achievements.record_playlist_expansion()
             if self.sync.is_signed_in:
+                self.achievements.record_playlist_expansion()
                 self.sync.push_achievements(self.achievements.stats)
         else:
             self._verify_single(item_id, url, start)
@@ -659,33 +735,52 @@ class AppState(QObject):
     def _start(self, item: DownloadItem, suppress_cookies: bool = False) -> None:
         args = self.yt.build_args(item, self.settings, suppress_cookies=suppress_cookies)
         worker = DownloadWorker(item.id, self.yt.binary, args)
-        worker.progress.connect(self._on_progress)
-        worker.filepath.connect(self._on_filepath)
-        worker.log.connect(self._on_log)
-        worker.finished.connect(self._on_complete)
-        worker.started_pid.connect(lambda iid, pid: self.update(iid, pid=pid))
+        token = object()
+        self._attempt_tokens[item.id] = token
+        worker.progress.connect(
+            lambda iid, norm, speed, eta, dl, tot, t=token:
+                self._on_progress(iid, norm, speed, eta, dl, tot, t))
+        worker.filepath.connect(
+            lambda iid, path, t=token: self._on_filepath(iid, path, t))
+        worker.log.connect(
+            lambda iid, line, t=token: self._on_log(iid, line, t))
+        worker.finished.connect(
+            lambda iid, ok, err, t=token: self._on_complete(iid, ok, err, t))
+        worker.started_pid.connect(
+            lambda iid, pid, t=token:
+                self.update(iid, pid=pid) if self._attempt_tokens.get(iid) is t else None)
         self._workers[item.id] = worker
         self.update(item.id, status="downloading", progress=0.0, speed_str="",
                     eta_str="", error_message="")
         worker.start()
 
-    def _on_progress(self, item_id, norm, speed, eta, dl, tot) -> None:
+    def _on_progress(self, item_id, norm, speed, eta, dl, tot, token=None) -> None:
+        if token is not None and self._attempt_tokens.get(item_id) is not token:
+            return
         self.update(item_id, progress=norm, speed_str=speed, eta_str=eta,
                     downloaded_bytes=dl, total_bytes=tot)
 
-    def _on_filepath(self, item_id, path) -> None:
+    def _on_filepath(self, item_id, path, token=None) -> None:
+        if token is not None and self._attempt_tokens.get(item_id) is not token:
+            return
         self.update(item_id, output_file_path=path)
 
-    def _on_log(self, item_id, line) -> None:
+    def _on_log(self, item_id, line, token=None) -> None:
+        if token is not None and self._attempt_tokens.get(item_id) is not token:
+            return
         if "ERROR" in line or "Unsupported URL" in line:
             it = self.item(item_id)
             if it and not it.error_message:
                 self.update(item_id, error_message=line)
 
-    def _on_complete(self, item_id, ok, err) -> None:
+    def _on_complete(self, item_id, ok, err, token=None) -> None:
+        if token is not None and self._attempt_tokens.get(item_id) is not token:
+            return
         it = self.item(item_id)
         if it is None:
             self._workers.pop(item_id, None)
+            if token is None or self._attempt_tokens.get(item_id) is token:
+                self._attempt_tokens.pop(item_id, None)
             return
         # Cookies fallback: if browser cookies were used for this attempt and
         # yt-dlp failed before any download progress (an extraction-time failure
@@ -702,19 +797,20 @@ class AppState(QObject):
             self.update(item_id, status="done", progress=1.0, error_message="",
                         pid=0, retry_count=0, completed_at=datetime.now().isoformat())
             self._persist_queue()
-            # Achievements: tally completed downloads + bytes locally (always,
-            # so progress is never lost), but only surface unlock notifications
-            # + sync when signed in — achievements are an account feature now.
-            # Badges earned while signed out still unlock locally and appear
-            # (and sync) once the user signs in.
-            unlocked = self.achievements.record_completion(it)
+            # Achievements belong to the active account. Signed-out downloads
+            # remain available in the Library without changing account stats.
             if self.sync.is_signed_in:
+                unlocked = self.achievements.record_completion(it)
                 self.sync.push_achievements(self.achievements.stats)
+            else:
+                unlocked = []
         else:
             unlocked = []
             if it.status == "downloading":
                 self.update(item_id, status="failed", error_message=err, pid=0)
         self._workers.pop(item_id, None)
+        if token is None or self._attempt_tokens.get(item_id) is token:
+            self._attempt_tokens.pop(item_id, None)
         # Auto-retry: if the item genuinely failed (not user-stopped),
         # auto-retry is on, and the budget isn't spent, re-queue it for another
         # attempt instead of leaving it failed. The start delay (if set) paces
@@ -772,6 +868,11 @@ class AppState(QObject):
         it = self.item(item_id)
         if not it or it.status not in ("downloading", "paused"):
             return
+        # Invalidate callbacks and mark stopped before the process emits its
+        # completion signal, preventing cookie fallback or auto-retry.
+        self._attempt_tokens.pop(item_id, None)
+        self.update(item_id, status="stopped", pid=0)
+        self._persist_queue()
         w = self._workers.pop(item_id, None)
         if w:
             try:
@@ -787,8 +888,6 @@ class AppState(QObject):
                     os.remove(p)
                 except OSError:
                     pass
-        self.update(item_id, status="stopped", pid=0)
-        self._persist_queue()
 
     def cancel_start(self, item_id: str) -> None:
         """Cancel a queued item's pending start — a deferred (delay-staggered)
@@ -950,14 +1049,19 @@ class AppState(QObject):
         self.formats_loading.add(item_id)
         self.formats_error[item_id] = ""
         url = it.url
+        generation = self._state_generation
 
         def work() -> None:
             result = self.yt.list_formats(url)
-            QTimer.singleShot(0, lambda: self._on_formats_done(item_id, result))
+            if self._state_generation is generation:
+                self.formats_ready.emit(generation, item_id, result)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_formats_done(self, item_id: str, result) -> None:
+    @Slot(int, str, object)
+    def _on_formats_done(self, generation, item_id: str, result) -> None:
+        if generation != self._state_generation:
+            return
         self.formats_loading.discard(item_id)
         if result:
             self.format_lists[item_id] = result
@@ -1014,9 +1118,10 @@ class AppState(QObject):
             result = app_updater.check_latest()
             if result:
                 tag, url = result
-                QTimer.singleShot(0, lambda: self._on_update_available(tag, url))
+                self.update_check_ready.emit(tag, url)
         threading.Thread(target=work, daemon=True).start()
 
+    @Slot(str, str)
     def _on_update_available(self, latest_tag: str, exe_url: str) -> None:
         self._pending_update = (latest_tag, exe_url)
         self.app_update_available.emit(latest_tag, exe_url)
@@ -1030,5 +1135,9 @@ class AppState(QObject):
         from . import app_updater
         def work():
             ok, msg = app_updater.download_and_relaunch(url, tag)
-            QTimer.singleShot(0, lambda: self.app_update_done.emit(ok, msg))
+            self.update_install_ready.emit(ok, msg)
         threading.Thread(target=work, daemon=True).start()
+
+    @Slot(bool, str)
+    def _on_update_install_ready(self, ok: bool, message: str) -> None:
+        self.app_update_done.emit(ok, message)

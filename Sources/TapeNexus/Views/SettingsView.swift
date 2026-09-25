@@ -303,11 +303,21 @@ struct SettingsSheet: View {
     private func restoreBackup() {
         backupMessage = nil
         restoreError = nil
+        guard state.canRestoreBackup else {
+            restoreError = "Stop active downloads before restoring a backup."
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        // The modal panel yields the main run loop, so a deferred launch may
+        // have started while it was open. Recheck immediately before writing.
+        guard state.canRestoreBackup else {
+            restoreError = "Stop active downloads before restoring a backup."
+            return
+        }
         guard let data = try? Data(contentsOf: url) else {
             restoreError = "Couldn't read that backup file."
             return
@@ -316,8 +326,8 @@ struct SettingsSheet: View {
             _ = try BackupManager.importData(data, supportDir: state.store.supportDir)
             // Pull the restored files into the live managers so a later persist
             // can't clobber them with pre-restore state before the restart.
-            state.library.reload()
-            state.achievements.reload()
+            state.reloadRestoredState()
+            draft = state.settings
             showRelaunch = true
         } catch {
             restoreError = error.localizedDescription
@@ -354,4 +364,3 @@ struct SettingsSheet: View {
         Toggle(label, isOn: isOn).font(.system(size: 12.5)).tint(Theme.accent)
     }
 }
-

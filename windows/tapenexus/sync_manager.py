@@ -16,6 +16,7 @@ import hashlib
 import http.server
 import json
 import os
+import queue
 import secrets
 import shutil
 import sys
@@ -117,7 +118,11 @@ class SyncManager(QObject):
         self._email = ""
         self._providers: list[str] = []
         self._storage_warned = False
-        self._merge_target = None
+        # Full-row upserts must stay ordered or an older request that finishes
+        # last can roll cloud progress backwards.
+        self._push_queue: queue.Queue = queue.Queue()
+        threading.Thread(target=self._push_loop, daemon=True,
+                         name="tn-achievement-push").start()
         self.is_configured = bool(self._url and self._anon)
         self.pull_ready.connect(self._on_pull_ready)
         if self.is_configured:
@@ -134,6 +139,10 @@ class SyncManager(QObject):
     @property
     def providers(self) -> list[str]:
         return list(self._providers)
+
+    @property
+    def user_id(self) -> Optional[str]:
+        return self._uid()
 
     # ── HTTP helpers ───────────────────────────────────────────────────────
     def _headers(self, bearer: Optional[str] = None, json_body: bool = True) -> dict:
@@ -468,13 +477,23 @@ class SyncManager(QObject):
         """Fire-and-forget upsert of the local stats to this user's row."""
         if not self._is_signed_in:
             return
-        threading.Thread(target=self._do_push, args=(self._row_from_stats(stats),), daemon=True).start()
+        row = self._row_from_stats(stats)
+        token = self._bearer()
+        self._push_queue.put((row, token))
 
-    def _do_push(self, row: dict) -> None:
+    def _push_loop(self) -> None:
+        while True:
+            row, token = self._push_queue.get()
+            try:
+                self._do_push(row, token)
+            finally:
+                self._push_queue.task_done()
+
+    def _do_push(self, row: dict, token) -> None:
         try:
             url = f"{self._url}/rest/v1/achievements?on_conflict=user_id"
             data = json.dumps(row).encode("utf-8")
-            headers = self._headers(self._bearer())
+            headers = self._headers(token)
             headers["Prefer"] = "return=representation,resolution=merge-duplicates"
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             urllib.request.urlopen(req, timeout=30).close()
@@ -486,28 +505,34 @@ class SyncManager(QObject):
         signal), then push the merged snapshot back."""
         if not self._is_signed_in:
             return
-        self._merge_target = achievements_manager
-        threading.Thread(target=self._do_pull, daemon=True).start()
+        requested_uid = self._uid()
+        token = self._bearer()
+        threading.Thread(target=self._do_pull,
+                         args=(requested_uid, token, achievements_manager),
+                         daemon=True).start()
 
-    def _do_pull(self) -> None:
+    def _do_pull(self, requested_uid, token, target) -> None:
         try:
             url = f"{self._url}/rest/v1/achievements?select=*&limit=1"
-            req = urllib.request.Request(url, headers=self._headers(self._bearer()), method="GET")
+            req = urllib.request.Request(url, headers=self._headers(token), method="GET")
             with urllib.request.urlopen(req, timeout=30) as r:
                 rows = json.loads(r.read().decode("utf-8") or "[]")
             remote = self._stats_from_row(rows[0]) if rows else None
             # Emit to marshal the merge onto the GUI thread (queued connection).
-            self.pull_ready.emit(remote)
+            self.pull_ready.emit((requested_uid, target, remote))
         except Exception:
             pass
 
     @Slot(object)
-    def _on_pull_ready(self, remote) -> None:
-        if self._merge_target is None:
+    def _on_pull_ready(self, payload) -> None:
+        if not isinstance(payload, tuple) or len(payload) != 3:
+            return
+        requested_uid, target, remote = payload
+        if not requested_uid or self._uid() != requested_uid:
             return
         if remote is not None:
-            self._merge_target.merge(remote)
-        self.push_achievements(self._merge_target.stats)
+            target.merge(remote)
+        self.push_achievements(target.stats)
 
     # ── row <-> stats ──────────────────────────────────────────────────────
     def _row_from_stats(self, s: AchievementStats) -> dict:

@@ -68,6 +68,9 @@ final class AppState: ObservableObject {
         q.name = "tapenexus.meta"
         return q
     }()
+    /// Rotated when backup restore replaces the queue. Background metadata
+    /// results captured under an older generation are discarded.
+    private var stateGeneration = UUID()
 
     init() {
         let store = SettingsStore()
@@ -97,9 +100,6 @@ final class AppState: ObservableObject {
         // currently-done queue items so existing users don't lose their history
         // the first time they hit "Clear done".
         library.seed(from: items)
-        // Count this launch for the secret launch-based achievements. Silent —
-        // no unlock notification at startup, the badges just appear in the popover.
-        _ = achievements.recordLaunch()
         // Republish LibraryStore changes through AppState so views reading
         // `state.library` re-render on archive/remove/delete.
         library.objectWillChange.sink { [weak self] in
@@ -113,6 +113,17 @@ final class AppState: ObservableObject {
         subscriptions.objectWillChange.sink { [weak self] in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
+        // Achievement state is account-scoped. Switching or signing out swaps
+        // the active local profile before any cloud pull can merge into it.
+        if let sync {
+            sync.$isSignedIn.removeDuplicates().sink { [weak self, weak sync] signedIn in
+                guard let self else { return }
+                self.achievements.activateUser(signedIn ? sync?.userId : nil)
+                if signedIn { _ = self.achievements.recordLaunch() }
+            }.store(in: &cancellables)
+        } else {
+            achievements.activateUser(nil)
+        }
 
         // wire manager + updater
         dm.state = self
@@ -311,11 +322,12 @@ final class AppState: ObservableObject {
         let url = sub.url
         let known = Set(sub.knownURLs)
         let firstCheck = sub.knownURLs.isEmpty
+        let generation = stateGeneration
         metaQueue.addOperation { [weak self] in
             let entries = ytRef.simulatePlaylist(url, cap: 200) ?? []
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                let entrySet = Set(entries)
+                guard self.stateGeneration == generation else { return }
                 let newURLs = entries.filter { !known.contains($0) }
                 self.subscriptions.update(id) { s in
                     s.knownURLs = entries
@@ -327,8 +339,8 @@ final class AppState: ObservableObject {
                     for u in newURLs where !self.items.contains(where: { $0.url == u }) {
                         self.addCandidate(u, preset: sub.preset, startImmediately: true)
                     }
-                    if !newURLs.isEmpty {
-                        self.achievements.recordPlaylistExpansion()
+                    if !newURLs.isEmpty, self.sync?.isSignedIn == true {
+                        _ = self.achievements.recordPlaylistExpansion()
                     }
                 }
             }
@@ -372,6 +384,7 @@ final class AppState: ObservableObject {
         case .galleryDl: simRef = galleryDL
         case .ytDlp:     simRef = yt
         }
+        let generation = stateGeneration
         metaQueue.addOperation { [weak self] in
             let result: SimulateResult
             if let g = simRef as? GalleryDLController {
@@ -383,6 +396,7 @@ final class AppState: ObservableObject {
             }
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                guard self.stateGeneration == generation else { return }
                 guard self.item(id) != nil else { return } // removed meanwhile
                 switch result {
                 case .success(let meta):
@@ -410,10 +424,12 @@ final class AppState: ObservableObject {
     private func verifyPlaylist(id: UUID, url: String, startImmediately: Bool) {
         let ytRef = yt
         let cap = settings.playlistCap
+        let generation = stateGeneration
         DispatchQueue.global().async { [weak self] in
             let entries = ytRef.simulatePlaylist(url, cap: cap)
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                guard self.stateGeneration == generation else { return }
                 guard self.item(id) != nil else { return } // removed meanwhile
                 if let entries = entries, entries.count > 1 {
                     // Replace the playlist placeholder with one row per video,
@@ -422,9 +438,9 @@ final class AppState: ObservableObject {
                     self.removeItem(id)
                     self.addURLs(entries, startImmediately: startImmediately)
                     // Achievements: a playlist was expanded into the queue.
-                    let unlocked = self.achievements.recordPlaylistExpansion()
                     let signedIn = self.sync?.isSignedIn ?? false
                     if signedIn {
+                        let unlocked = self.achievements.recordPlaylistExpansion()
                         for a in unlocked {
                             Notifier.shared.post(
                                 title: "🏆 Achievement unlocked",
@@ -502,6 +518,30 @@ final class AppState: ObservableObject {
             }
         }
         persist()
+    }
+
+    var canRestoreBackup: Bool {
+        !items.contains { $0.status == .downloading || $0.status == .paused || $0.status == .resolving }
+    }
+
+    /// Replace all live state covered by a backup. Restore is blocked while
+    /// work is active, so no process callback can overwrite the restored queue.
+    func reloadRestoredState() {
+        downloads.prepareForRestore()
+        stateGeneration = UUID()
+        metaQueue.cancelAllOperations()
+        store.reloadFromDisk()
+        settings = store.settings
+        items = store.queue
+        library.reload()
+        achievements.reload()
+        metaQueue.maxConcurrentOperationCount = max(1, settings.maxConcurrent)
+        clipboard.enabled = settings.autoGrabClipboard
+        clipboard.pollInterval = settings.pollIntervalSeconds
+        clipboard.start()
+        applyMenuBarMode()
+        evaluateQuietHours()
+        refreshBadge()
     }
 
     func checkForUpdatesNow() { updater.checkAndUpdate(auto: true) }

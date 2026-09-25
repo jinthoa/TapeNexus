@@ -302,21 +302,48 @@ enum Achievement: String, CaseIterable, Identifiable {
 final class AchievementsManager: ObservableObject {
     @Published var stats: AchievementStats
     private let url: URL
+    private var profiles: [String: AchievementStats]
+    private var legacy: AchievementStats?
+    private var activeUserID: String?
 
     init(supportDir: URL) {
         url = supportDir.appendingPathComponent("achievements.json")
-        if let loaded = Self.load(url) {
-            stats = loaded
-        } else {
+        let loaded = Self.loadStore(url)
+        profiles = loaded.profiles
+        legacy = loaded.legacy
+        activeUserID = nil
+        stats = AchievementStats()
+    }
+
+    /// Select the stats belonging to one authenticated account. Signed-out
+    /// state is blank and is never persisted, so account B cannot inherit or
+    /// upload account A's activity or leaderboard consent. A pre-v2 unscoped
+    /// file is claimed once by the first authenticated user after migration.
+    func activateUser(_ userID: String?) {
+        if let activeUserID { profiles[activeUserID] = stats }
+        activeUserID = userID
+        guard let userID, !userID.isEmpty else {
             stats = AchievementStats()
+            return
         }
+        if profiles[userID] == nil {
+            profiles[userID] = legacy ?? AchievementStats()
+            legacy = nil
+        }
+        stats = profiles[userID] ?? AchievementStats()
+        save()
     }
 
     /// Re-read `achievements.json` from disk. Used after a backup restore so the
     /// in-memory state matches the restored file (and a later `save()` can't
     /// clobber it with the pre-restore values).
     func reload() {
-        if let loaded = Self.load(url) { stats = loaded }
+        let userID = activeUserID
+        let loaded = Self.loadStore(url)
+        profiles = loaded.profiles
+        legacy = loaded.legacy
+        activeUserID = nil
+        activateUser(userID)
     }
 
     /// Human-readable running total, for the Settings panel.
@@ -424,17 +451,31 @@ final class AchievementsManager: ObservableObject {
     }
 
     private func save() {
+        guard let activeUserID else { return }
+        profiles[activeUserID] = stats
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
-        guard let data = try? enc.encode(stats) else { return }
+        let store = AchievementStore(version: 2, legacy: legacy, profiles: profiles)
+        guard let data = try? enc.encode(store) else { return }
         try? data.write(to: url, options: .atomic)
     }
 
-    private static func load(_ url: URL) -> AchievementStats? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+    private static func loadStore(_ url: URL) -> (profiles: [String: AchievementStats], legacy: AchievementStats?) {
+        guard let data = try? Data(contentsOf: url) else { return ([:], nil) }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
-        return try? dec.decode(AchievementStats.self, from: data)
+        if let store = try? dec.decode(AchievementStore.self, from: data), store.version == 2 {
+            return (store.profiles, store.legacy)
+        }
+        // v1 stored a single unscoped snapshot. Preserve it and let the first
+        // authenticated user claim it exactly once.
+        return ([:], try? dec.decode(AchievementStats.self, from: data))
     }
+}
+
+private struct AchievementStore: Codable {
+    let version: Int
+    let legacy: AchievementStats?
+    let profiles: [String: AchievementStats]
 }

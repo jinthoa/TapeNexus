@@ -41,6 +41,10 @@ final class DownloadManager {
     /// from one queue row; we archive each as its own Library entry. Cleared
     /// on completion / stop / remove.
     private var pathsByItem: [UUID: [String]] = [:]
+    /// Unique id for the currently active process attempt of each queue item.
+    /// Late callbacks from a stopped/retried process are ignored instead of
+    /// mutating the replacement attempt that reused the same item id.
+    private var attemptTokens: [UUID: UUID] = [:]
 
     /// Called whenever queue changes; starts queued items up to the limit.
     func pump() {
@@ -72,15 +76,19 @@ final class DownloadManager {
         let s = settings()
         let id = item.id
         let engine = item.engine
+        let attempt = UUID()
+        attemptTokens[id] = attempt
         // Shared callbacks (identical for both engines — the controllers share
         // one signature). The launch call is dispatched on the item's engine.
-        let onProgress: (Double, String, String, Int64, Int64) -> Void = { [weak state] p, speed, eta, dl, tot in
+        let onProgress: (Double, String, String, Int64, Int64) -> Void = { [weak self, weak state] p, speed, eta, dl, tot in
+            guard self?.attemptTokens[id] == attempt else { return }
             state?.update(id) {
                 $0.progress = p; $0.speedStr = speed; $0.etaStr = eta
                 $0.downloadedBytes = dl; $0.totalBytes = tot
             }
         }
         let onFilePath: (String) -> Void = { [weak self, weak state] path in
+            guard self?.attemptTokens[id] == attempt else { return }
             state?.update(id) { $0.outputFilePath = path }
             // gallery-dl emits one path per file; a multi-file Twitter/Reddit
             // post produces many. Track them so completion can archive each as
@@ -93,17 +101,20 @@ final class DownloadManager {
             // Track the .part file(s) yt-dlp is writing so stop() can clean
             // them up. Dedupe — multi-stream downloads re-emit per stream.
             guard let self = self else { return }
+            guard self.attemptTokens[id] == attempt else { return }
             let existing = self.partFilesByItem[id] ?? []
             if !existing.contains(path) {
                 self.partFilesByItem[id] = existing + [path]
             }
         }
-        let onLog: (String) -> Void = { [weak state] log in
+        let onLog: (String) -> Void = { [weak self, weak state] log in
+            guard self?.attemptTokens[id] == attempt else { return }
             // stash last log line as message context for failed items
             state?.appendLog(id, line: log)
         }
         let onComplete: (Bool, String) -> Void = { [weak self, weak state] ok, err in
             guard let self = self, let state = state else { return }
+            guard self.attemptTokens[id] == attempt else { return }
             // The download finished (success or failure): the .part file is
             // gone (renamed to the final file on success), so drop tracking.
             self.partFilesByItem.removeValue(forKey: id)
@@ -126,7 +137,7 @@ final class DownloadManager {
                 state.update(id) {
                     if ok {
                         $0.status = .done; $0.progress = 1; $0.errorMessage = ""
-                        $0.completedAt = Date(); $0.retryCount = 0
+                        $0.completedAt = Date()
                     } else {
                         // don't override a user-driven stopped/paused state
                         if $0.status == .downloading {
@@ -152,6 +163,7 @@ final class DownloadManager {
                     }
                     state.persist()
                     state.refreshBadge()
+                    if self.attemptTokens[id] == attempt { self.attemptTokens.removeValue(forKey: id) }
                     self.pump()
                     return
                 }
@@ -187,9 +199,9 @@ final class DownloadManager {
                         self.pathsByItem.removeValue(forKey: id)
                         state.library.archive(it, completedAt: it.completedAt ?? Date())
                     }
-                    let unlocked = state.achievements.recordCompletion(it)
                     let signedIn = state.sync?.isSignedIn ?? false
                     if signedIn {
+                        let unlocked = state.achievements.recordCompletion(it)
                         for a in unlocked {
                             Notifier.shared.post(
                                 title: "🏆 Achievement unlocked",
@@ -199,7 +211,9 @@ final class DownloadManager {
                             Task { await sync.pushAchievements(state.achievements.stats) }
                         }
                     }
+                    state.update(id) { $0.retryCount = 0 }
                 }
+                if self.attemptTokens[id] == attempt { self.attemptTokens.removeValue(forKey: id) }
                 state.refreshBadge()
                 self.pump()
         }
@@ -241,14 +255,17 @@ final class DownloadManager {
     func stop(_ id: UUID) {
         guard let state = state, let item = state.item(id) else { return }
         guard item.status == .downloading || item.status == .paused else { return }
+        // Invalidate callbacks and mark the row stopped before terminating;
+        // process completion can otherwise trigger cookie fallback/auto-retry.
+        attemptTokens.removeValue(forKey: id)
+        state.update(id) { $0.status = .stopped; $0.pid = 0 }
+        state.persist()
         ProcessControl.signalTree(item.pid, SIGTERM)
         // escalate to SIGKILL after grace
         let pid = item.pid
         bgQueue.asyncAfter(deadline: .now() + 3) {
             ProcessControl.signalTree(pid, SIGKILL)
         }
-        state.update(id) { $0.status = .stopped; $0.pid = 0 }
-        state.persist()
         // Delete the partial .part file(s) the engine was writing so a stopped
         // download doesn't leave disk litter. Unix allows unlinking a file that
         // is still open (freed once the dying process closes it), so removing
@@ -309,6 +326,21 @@ final class DownloadManager {
     /// Per-item nonces for deferred launches; `cancelStart` rotates a token so
     /// a pending `asyncAfter` knows it was cancelled and skips the launch.
     private var launchTokens: [UUID: UUID] = [:]
+
+    /// Invalidate every deferred launch before replacing queue state during a
+    /// backup restore. Already-enqueued closures then fail their token check.
+    func prepareForRestore() {
+        launchTokens.removeAll()
+        lastStartAt = nil
+        burstRemaining = 0
+        guard let state else { return }
+        for id in state.items.map(\.id) {
+            state.update(id) {
+                $0.launchScheduled = false
+                $0.launchAt = nil
+            }
+        }
+    }
 
     private func scheduleStarts(_ items: [DownloadItem]) {
         guard !items.isEmpty else { return }

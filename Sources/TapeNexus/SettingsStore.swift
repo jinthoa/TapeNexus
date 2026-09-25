@@ -45,7 +45,7 @@ final class SettingsStore: ObservableObject {
             settings = .default
         }
         if let q = Self.loadJSON(queueURL, as: QueueSnapshot.self) {
-            queue = q.queue.filter { $0.status != .downloading && $0.status != .paused }
+            queue = Self.recoveredQueue(q.queue)
             metaCache = q.meta ?? [:]
         }
         ensureDestinationExists()
@@ -82,6 +82,39 @@ final class SettingsStore: ObservableObject {
         saveJSON(snap, to: queueURL)
     }
 
+    /// Reload both persisted models after a backup restore. Any pending
+    /// pre-restore settings write is cancelled first so stale state cannot win.
+    func reloadFromDisk() {
+        persistWorkItem?.cancel()
+        persistWorkItem = nil
+        settings = Self.loadJSON(settingsURL, as: AppSettings.self) ?? .default
+        if let q = Self.loadJSON(queueURL, as: QueueSnapshot.self) {
+            queue = Self.recoveredQueue(q.queue)
+            metaCache = q.meta ?? [:]
+        } else {
+            queue = []
+            metaCache = [:]
+        }
+        ensureDestinationExists()
+    }
+
+    /// A persisted/backup snapshot cannot resume a process that no longer
+    /// exists. Keep every row, but park transient work so the user can retry it.
+    private static func recoveredQueue(_ queue: [DownloadItem]) -> [DownloadItem] {
+        queue.map { saved in
+            var item = saved
+            if item.status == .downloading || item.status == .paused || item.status == .resolving {
+                item.status = .stopped
+                item.pid = 0
+                item.speedStr = ""
+                item.etaStr = ""
+            }
+            item.launchScheduled = false
+            item.launchAt = nil
+            return item
+        }
+    }
+
     private func schedulePersist() {
         persistWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -107,7 +140,16 @@ final class SettingsStore: ObservableObject {
         let tmp = url.appendingPathExtension("tmp")
         do {
             try data.write(to: tmp, options: .atomic)
-            _ = try? FileManager.default.replaceItemAt(url, withItemAt: tmp)
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+                } catch {
+                    try data.write(to: url, options: .atomic)
+                    try? FileManager.default.removeItem(at: tmp)
+                }
+            } else {
+                try FileManager.default.moveItem(at: tmp, to: url)
+            }
         } catch {
             try? data.write(to: url, options: .atomic)
         }

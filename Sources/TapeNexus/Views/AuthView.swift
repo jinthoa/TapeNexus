@@ -356,7 +356,10 @@ struct SignInSheet: View {
         Task {
             do {
                 try await sync.signInOrSignUp(email: e, password: p)
-                if sync.isSignedIn { await sync.pullAndMerge(into: achievements) }
+                if sync.isSignedIn {
+                    achievements.activateUser(sync.userId)
+                    await sync.pullAndMerge(into: achievements)
+                }
                 password = ""
                 busy = false
                 if sync.isSignedIn { dismiss() }
@@ -372,7 +375,10 @@ struct SignInSheet: View {
         Task {
             do {
                 try await sync.signInWithGoogle()
-                if sync.isSignedIn { await sync.pullAndMerge(into: achievements) }
+                if sync.isSignedIn {
+                    achievements.activateUser(sync.userId)
+                    await sync.pullAndMerge(into: achievements)
+                }
                 busy = false
                 if sync.isSignedIn { dismiss() }
             } catch let ex {
@@ -469,7 +475,7 @@ struct LeaderboardSheet: View {
                             if saving { ProgressView().controlSize(.small) } else { Text("Save") }
                         }
                         .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small)
-                        .disabled(saving || !optIn || displayName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(saving || (optIn && displayName.trimmingCharacters(in: .whitespaces).isEmpty))
                     }
                     Text("Only your display name, score, and download count are public. Everything else stays private.")
                         .font(.system(size: 9)).foregroundStyle(Theme.muted)
@@ -600,7 +606,7 @@ struct LeaderboardSheet: View {
 
     private func saveProfile() {
         let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard optIn, !name.isEmpty else { return }
+        guard !optIn || !name.isEmpty else { return }
         saving = true; error = nil
         achievements.setLeaderboardProfile(name: name, optIn: optIn)
         Task {
