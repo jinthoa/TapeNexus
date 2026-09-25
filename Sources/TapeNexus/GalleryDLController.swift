@@ -101,20 +101,41 @@ final class GalleryDLController: @unchecked Sendable {
     /// the first dict without a `filename` is the tweet/post root, dicts with
     /// `filename` are the individual media files.
     func simulate(_ url: String) -> SimulateResult {
-        var args = ["-j", "--simulate", "--no-warnings"]
+        // Listing-shaped URLs — X /media, Reddit /saved, subreddits, profiles —
+        // can contain hundreds or thousands of items. A full `-j --simulate`
+        // enumerates every one just to read metadata, which is slow and for
+        // subreddits is literally unbounded (it never terminates). Skip the
+        // probe for listings: use a friendly label as the title and let the
+        // real download do the enumeration. The download's onComplete surfaces
+        // any genuine error (auth, network); gallery-dl's cache DB resumes
+        // already-fetched files on a re-run, so a stopped bulk download isn't
+        // lost progress.
+        if isListingURL(url) {
+            return .success(VideoMeta(title: listingTitle(url), uploader: "",
+                                      thumbnail: "", durationStr: ""))
+        }
+        // Single-item URLs: `-j --simulate` (dump-json) gives rich metadata
+        // (title, uploader, file count) for the queue row. `-q` keeps stderr
+        // quiet (gallery-dl has no --no-warnings flag; that was a bug that
+        // aborted every probe with "unrecognized arguments" and marked every
+        // gallery-dl URL failed).
+        var args = ["-j", "--simulate", "-q"]
         if let cb = cookiesSpec() { args += ["--cookies-from-browser", cb] }
         args.append(url)
         let r = runSync(args, timeout: 90)
-        // gallery-dl exits non-zero + an error dict in the JSON (or stderr) on
-        // failure. Distinguish "host not recognised" (silent skip) from a
-        // recognised-but-erroring link (keep + surface).
+        // gallery-dl returns extraction errors as a JSON array entry with an
+        // "error" key (and still exits 0), or via a non-zero exit + stderr.
         let combined = r.err + r.out
         if r.code != 0 {
             if combined.contains("Unsupported URL") || combined.contains("No suitable extractor") || combined.contains("unsupported URL") {
                 return .unsupported
             }
-            let msg = firstErrLine(combined) ?? "Could not verify link (gallery-dl exited \(r.code))"
-            return .failed(msg)
+            // Arg/launch errors and genuine fetch failures: re-probe with a
+            // plain --simulate before giving up (see fallback note below).
+            if plainSimulateOK(url) {
+                return bestEffort(url)
+            }
+            return .failed(friendlyError(firstErrLine(combined) ?? "Could not verify link (gallery-dl exited \(r.code))"))
         }
         guard let data = r.out.data(using: .utf8),
               let top = try? JSONSerialization.jsonObject(with: data) else {
@@ -125,13 +146,22 @@ final class GalleryDLController: @unchecked Sendable {
             return .failed("No metadata returned")
         }
         // An explicit error entry from the extractor (e.g. login required /
-        // blocked) surfaces as a dict with an "error" key.
+        // blocked / "Unavailable") surfaces as a dict with an "error" key.
         if let errDict = dicts.first(where: { $0["error"] != nil }) {
             let msg = (errDict["message"] as? String)
                 ?? (errDict["error"] as? String)
                 ?? "Extraction error"
             if msg.lowercased().contains("unsupported") { return .unsupported }
-            return .failed(msg)
+            // The dump-json probe is flakier than the real extractor: e.g. a
+            // tweet behind a "Show probable spam" stub returns "Unavailable" in
+            // JSON mode while the actual download succeeds. Re-probe with a
+            // plain --simulate; if that exits 0, trust the download will work
+            // and surface a best-effort row (no rich metadata) rather than
+            // marking it failed and never attempting the download.
+            if plainSimulateOK(url) {
+                return bestEffort(url)
+            }
+            return .failed(friendlyError(msg))
         }
         let root = dicts.first(where: { $0["filename"] == nil }) ?? dicts[0]
         let files = dicts.filter { $0["filename"] != nil }
@@ -144,8 +174,95 @@ final class GalleryDLController: @unchecked Sendable {
         // No reliable media URL is exposed in dump-json for Twitter video, so
         // leave the thumbnail empty — the queue row renders fine without it.
         let durationStr = durationLabel(files: files)
+        // Reddit's dump-json exposes a `thumbnail` field (a small
+        // preview.redd.it image) — wire it up so Reddit queue/Library rows get
+        // a real thumbnail. It's a literal "self"/"nsfw"/"spoiler"/"default"
+        // marker (not a URL) for text/NSFW posts, so only accept http URLs.
+        // Twitter dump-json has no media URL at all, so tweets stay empty and
+        // render the placeholder (see ThumbView).
+        let thumb = (root["thumbnail"] as? String).flatMap { $0.hasPrefix("http") ? $0 : nil } ?? ""
         return .success(VideoMeta(title: title, uploader: uploader,
-                                  thumbnail: "", durationStr: durationStr))
+                                  thumbnail: thumb, durationStr: durationStr))
+    }
+
+    /// Plain `--simulate` (no `-j`) tiebreaker — returns true if gallery-dl's
+    /// real extraction path succeeds (exit 0), false if it errors too. Used to
+    /// distinguish JSON-mode-only failures from genuine download failures.
+    private func plainSimulateOK(_ url: String) -> Bool {
+        var args = ["--simulate", "-q"]
+        if let cb = cookiesSpec() { args += ["--cookies-from-browser", cb] }
+        args.append(url)
+        return runSync(args, timeout: 90).code == 0
+    }
+
+    /// Best-effort row when metadata couldn't be probed but the download itself
+    /// appears viable: keep the URL as the title so the queue launches it, and
+    /// let the real download surface any true error via onComplete.
+    private func bestEffort(_ url: String) -> SimulateResult {
+        .success(VideoMeta(title: url, uploader: "", thumbnail: "", durationStr: ""))
+    }
+
+    /// Maps gallery-dl's terse extractor errors to a message that tells the
+    /// user what to do. The common one is Reddit/Twitter blocking anonymous
+    /// access ("blocked by network security") — that means cookies aren't set
+    /// or the account isn't logged in to the chosen browser.
+    private func friendlyError(_ msg: String) -> String {
+        let l = msg.lowercased()
+        if l.contains("blocked by network security") || l.contains("login") || l.contains("unauthorized") || l.contains("403") || l.contains("rate limit") {
+            return "\(msg)  —  set cookiesBrowser in Settings and make sure you're logged in to the site in that browser."
+        }
+        return msg
+    }
+
+    /// True for URLs that enumerate many items (a whole feed/listing), where a
+    /// full `-j --simulate` would be slow or unbounded. Single tweets
+    /// (`/<user>/status/<id>`) and single Reddit posts (`.../comments/<id>`)
+    /// are NOT listings — everything else on the gallery-dl hosts is.
+    private func isListingURL(_ url: String) -> Bool {
+        guard let c = URLComponents(string: url) else { return false }
+        let host = (c.host ?? "").lowercased()
+        let path = c.path.lowercased()
+        if host.hasSuffix("twitter.com") || host.hasSuffix("x.com") {
+            return !path.contains("/status/")
+        }
+        if host.hasSuffix("reddit.com") {
+            if path.contains("/comments/") { return false }      // single post
+            if host == "redd.it" { return false }                // shortlink → single
+            return path.contains("/r/") || path.contains("/user/") || path.contains("/saved")
+        }
+        return false
+    }
+
+    /// Friendly queue-row title for a listing URL (derived from the URL the
+    /// user pasted — never hardcoded). Falls back to the raw URL.
+    private func listingTitle(_ url: String) -> String {
+        guard let c = URLComponents(string: url) else { return url }
+        let host = (c.host ?? "").lowercased()
+        let parts = c.path.split(separator: "/").map(String.init)
+        if host.hasSuffix("twitter.com") || host.hasSuffix("x.com") {
+            let user = parts.first ?? ""
+            let p = c.path.lowercased()
+            if p.contains("/media") { return "X media — @\(user)" }
+            if p.contains("/likes") { return "X likes — @\(user)" }
+            if p.contains("/replies") { return "X replies — @\(user)" }
+            return "X profile — @\(user)"
+        }
+        if host.hasSuffix("reddit.com") {
+            if c.path.lowercased().contains("/saved") {
+                if let i = parts.firstIndex(of: "user"), i + 1 < parts.count {
+                    return "Reddit saved — u/\(parts[i + 1])"
+                }
+                return "Reddit saved"
+            }
+            if let i = parts.firstIndex(of: "r"), i + 1 < parts.count {
+                return "r/\(parts[i + 1])"
+            }
+            if let i = parts.firstIndex(of: "user"), i + 1 < parts.count {
+                return "u/\(parts[i + 1]) posts"
+            }
+            return url
+        }
+        return url
     }
 
     /// "0:05" for a single video, "N files" for a multi-file post, else "".
