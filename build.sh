@@ -173,45 +173,36 @@ rm -rf "$SCRIPTS"
 mkdir -p "$SCRIPTS"
 cat > "$SCRIPTS/preinstall" <<'SH'
 #!/bin/bash
-# Quit any running TapeNexus so the installer can overwrite the bundle — but
-# ONLY for a manual install (double-click the .pkg / `sudo installer`). An
-# in-app self-update (Settings → Update) writes /tmp/tn-self-update holding
-# the orchestrating app's PID before invoking us; that app is blocked on the
-# installer's exit and quits + relaunches itself once we return, so killing
-# it here would abort the install ("update failed"). Skip the kill when the
-# sentinel names a live TapeNexus. Always exit 0 so a fresh install (app not
-# running / no sentinel) never fails the installer.
-SENTINEL="/tmp/tn-self-update"
-in_app=0
-if [ -r "$SENTINEL" ]; then
-  spid=$(tr -dc '0-9' < "$SENTINEL" 2>/dev/null)
-  if [ -n "$spid" ]; then
-    case "$(ps -o comm= -p "$spid" 2>/dev/null)" in
-      *TapeNexus*) in_app=1;;
-    esac
-  fi
-fi
-if [ "$in_app" = "0" ]; then
-  killall -TERM "TapeNexus" 2>/dev/null
-  sleep 1
-  killall -KILL "TapeNexus" 2>/dev/null
-fi
+# Intentionally a no-op. Quitting any running TapeNexus happens in postinstall
+# (after the new bundle is in place), never here. The in-app self-updater runs
+# the installer as a child and blocks on its exit, so killing the app mid-
+# install aborts the installer ("update failed"); and on MDM-locked machines
+# a kill may be blocked anyway. macOS lets `installer` overwrite a running
+# .app bundle (the old process keeps its executable via an open file handle),
+# so there's no need to quit first. Always exit 0.
 exit 0
 SH
 cat > "$SCRIPTS/postinstall" <<'SH'
 #!/bin/bash
-# Clear the in-app self-update sentinel (set by the app's updater), then
-# relaunch the freshly installed TapeNexus in the logged-in user's session.
-# postinstall runs as root, so resolve the console user and re-exec `open`
-# under their uid via launchctl (a root `open` spawns the app under root,
-# which breaks the GUI and per-user support-dir resolution). For an in-app
-# update the old app is still running and quitting itself, so `open` just
-# activates it — the app's own relaunch does the restart; for a manual
-# install this IS the restart.
-rm -f /tmp/tn-self-update 2>/dev/null
+# The new bundle is installed. Quit any running TapeNexus — gracefully, as the
+# console user (works for both a manual double-click install and an in-app
+# self-update where the old app is blocked on this installer's exit) — wait
+# for it to die so `open` launches the NEW bundle instead of activating the
+# old instance, then relaunch in the user's session. postinstall runs as root,
+# so resolve the console user and act under their uid via launchctl. (Killing
+# the app can't cascade to this installer: exit() orphans child processes to
+# launchd rather than killing them, so we keep running after the app quits.)
 CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null)
 if [[ -n "$CONSOLE_USER" && "$CONSOLE_USER" != "root" ]]; then
-  launchctl asuser "$(id -u "$CONSOLE_USER")" open /Applications/TapeNexus.app
+  UID_NUM=$(id -u "$CONSOLE_USER")
+  launchctl asuser "$UID_NUM" /usr/bin/osascript -e 'tell application "TapeNexus" to quit' 2>/dev/null
+  # wait up to ~5s for the old app to exit
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x TapeNexus >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  killall -KILL "TapeNexus" 2>/dev/null   # force-kill if still alive (hung)
+  launchctl asuser "$UID_NUM" /usr/bin/open /Applications/TapeNexus.app
 fi
 exit 0
 SH
