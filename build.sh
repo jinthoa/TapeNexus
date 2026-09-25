@@ -164,12 +164,44 @@ rm -rf "$PAYLOAD"
 mkdir -p "$PAYLOAD/Applications"
 cp -R "$APP" "$PAYLOAD/Applications/"
 
+# Installer scripts: quit a running TapeNexus before replacing the bundle,
+# then relaunch the new copy in the console user's session once installed.
+# (postinstall runs as root; a bare `open` would launch the app under root
+# and break its GUI/sandbox, so resolve the logged-in user and use launchctl.)
+SCRIPTS="$BUILD/scripts"
+rm -rf "$SCRIPTS"
+mkdir -p "$SCRIPTS"
+cat > "$SCRIPTS/preinstall" <<'SH'
+#!/bin/bash
+# Gracefully quit any running TapeNexus so the installer can overwrite the
+# bundle; fall back to a force-kill. Always exit 0 so a fresh install (app
+# not running) never fails the installer.
+killall -TERM "TapeNexus" 2>/dev/null
+sleep 1
+killall -KILL "TapeNexus" 2>/dev/null
+exit 0
+SH
+cat > "$SCRIPTS/postinstall" <<'SH'
+#!/bin/bash
+# Relaunch the freshly installed TapeNexus in the logged-in user's session.
+# postinstall runs as root, so resolve the console user and re-exec `open`
+# under their uid via launchctl (a root `open` spawns the app under root,
+# which breaks the GUI and the app's per-user support dir resolution).
+CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null)
+if [[ -n "$CONSOLE_USER" && "$CONSOLE_USER" != "root" ]]; then
+  launchctl asuser "$(id -u "$CONSOLE_USER")" open /Applications/TapeNexus.app
+fi
+exit 0
+SH
+chmod +x "$SCRIPTS/preinstall" "$SCRIPTS/postinstall"
+
 COMPONENT_PKG="$BUILD/TapeNexus.component.pkg"
 pkgbuild \
   --root "$PAYLOAD" \
   --install-location / \
   --identifier "$IDENTIFIER" \
   --version "$VERSION" \
+  --scripts "$SCRIPTS" \
   "$COMPONENT_PKG"
 
 DIST="$BUILD/Distribution.xml"
