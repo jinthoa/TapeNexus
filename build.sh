@@ -173,20 +173,42 @@ rm -rf "$SCRIPTS"
 mkdir -p "$SCRIPTS"
 cat > "$SCRIPTS/preinstall" <<'SH'
 #!/bin/bash
-# Gracefully quit any running TapeNexus so the installer can overwrite the
-# bundle; fall back to a force-kill. Always exit 0 so a fresh install (app
-# not running) never fails the installer.
-killall -TERM "TapeNexus" 2>/dev/null
-sleep 1
-killall -KILL "TapeNexus" 2>/dev/null
+# Quit any running TapeNexus so the installer can overwrite the bundle — but
+# ONLY for a manual install (double-click the .pkg / `sudo installer`). An
+# in-app self-update (Settings → Update) writes /tmp/tn-self-update holding
+# the orchestrating app's PID before invoking us; that app is blocked on the
+# installer's exit and quits + relaunches itself once we return, so killing
+# it here would abort the install ("update failed"). Skip the kill when the
+# sentinel names a live TapeNexus. Always exit 0 so a fresh install (app not
+# running / no sentinel) never fails the installer.
+SENTINEL="/tmp/tn-self-update"
+in_app=0
+if [ -r "$SENTINEL" ]; then
+  spid=$(tr -dc '0-9' < "$SENTINEL" 2>/dev/null)
+  if [ -n "$spid" ]; then
+    case "$(ps -o comm= -p "$spid" 2>/dev/null)" in
+      *TapeNexus*) in_app=1;;
+    esac
+  fi
+fi
+if [ "$in_app" = "0" ]; then
+  killall -TERM "TapeNexus" 2>/dev/null
+  sleep 1
+  killall -KILL "TapeNexus" 2>/dev/null
+fi
 exit 0
 SH
 cat > "$SCRIPTS/postinstall" <<'SH'
 #!/bin/bash
-# Relaunch the freshly installed TapeNexus in the logged-in user's session.
+# Clear the in-app self-update sentinel (set by the app's updater), then
+# relaunch the freshly installed TapeNexus in the logged-in user's session.
 # postinstall runs as root, so resolve the console user and re-exec `open`
 # under their uid via launchctl (a root `open` spawns the app under root,
-# which breaks the GUI and the app's per-user support dir resolution).
+# which breaks the GUI and per-user support-dir resolution). For an in-app
+# update the old app is still running and quitting itself, so `open` just
+# activates it — the app's own relaunch does the restart; for a manual
+# install this IS the restart.
+rm -f /tmp/tn-self-update 2>/dev/null
 CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null)
 if [[ -n "$CONSOLE_USER" && "$CONSOLE_USER" != "root" ]]; then
   launchctl asuser "$(id -u "$CONSOLE_USER")" open /Applications/TapeNexus.app

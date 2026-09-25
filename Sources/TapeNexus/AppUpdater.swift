@@ -112,7 +112,14 @@ final class AppUpdater {
             self.report(.init(currentVersion: self.currentVersion, latestVersion: tag,
                               state: .downloading,
                               message: "Installing Tape Nexus \(tag)… (enter your Mac password)"))
+            // Marker the installer's preinstall script looks for: if present
+            // and our PID is a live TapeNexus, preinstall must NOT kill us —
+            // we're blocked on the installer's exit and will quit + relaunch
+            // ourselves once it returns. Without it, preinstall kills the
+            // orchestrating app mid-install and the installer aborts.
+            self.writeSelfUpdateSentinel()
             if !self.runPrivilegedInstall(pkg: dest) {
+                self.clearSelfUpdateSentinel()
                 self.report(.init(currentVersion: self.currentVersion, latestVersion: tag,
                                   state: .failed,
                                   message: "Install cancelled or failed. \(dest.lastPathComponent) is in Downloads — double-click it to install manually."))
@@ -153,6 +160,7 @@ final class AppUpdater {
     /// relaunch. The 3s grace lets the old process fully terminate before the
     /// new bundle is opened.
     private func relaunchAndQuit() {
+        clearSelfUpdateSentinel()
         let appPath = "/Applications/TapeNexus.app"
         let quoted = appPath.replacingOccurrences(of: "'", with: "'\\''")
         let relaunch = Process()
@@ -164,6 +172,19 @@ final class AppUpdater {
 
     private func report(_ s: AppUpdateStatus) {
         DispatchQueue.main.async { self.onStatus?(s) }
+    }
+
+    /// Marker file (/tmp/tn-self-update) holding our PID, written before the
+    /// privileged install so the installer's preinstall script can tell an
+    /// in-app self-update (don't kill the orchestrating app) from a manual
+    /// .pkg install (kill + relaunch the idle app). See preinstall in build.sh.
+    private static let sentinelPath = "/tmp/tn-self-update"
+    private func writeSelfUpdateSentinel() {
+        try? "\(ProcessInfo.processInfo.processIdentifier)"
+            .write(toFile: Self.sentinelPath, atomically: true, encoding: .utf8)
+    }
+    private func clearSelfUpdateSentinel() {
+        try? FileManager.default.removeItem(atPath: Self.sentinelPath)
     }
 
     // MARK: - GitHub
