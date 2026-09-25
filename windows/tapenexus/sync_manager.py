@@ -518,10 +518,23 @@ class SyncManager(QObject):
             "unlocked_ids": sorted(s.unlocked_ids),
             "night_owl": s.night_owl,
             "early_bird": s.early_bird,
+            "hosts_seen": sorted(s.hosts_seen),
+            "presets_used": sorted(s.presets_used),
+            "completion_days": sorted(s.completion_days),
+            "did_clip": s.did_clip,
+            "did_schedule": s.did_schedule,
+            "playlists_expanded": s.playlists_expanded,
+            "did_retry_recover": s.did_retry_recover,
+            "weekend_warrior": s.weekend_warrior,
+            "score": s.score,
+            "display_name": s.display_name,
+            "leaderboard_opt_in": s.leaderboard_opt_in,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if s.first_completed_at:
             row["first_completed_at"] = s.first_completed_at
+        if s.leaderboard_settings_at:
+            row["leaderboard_settings_at"] = s.leaderboard_settings_at
         return row
 
     @staticmethod
@@ -540,7 +553,93 @@ class SyncManager(QObject):
         s.night_owl = bool(row.get("night_owl"))
         s.early_bird = bool(row.get("early_bird"))
         s.first_completed_at = row.get("first_completed_at")
+        for key, attr in (("hosts_seen", "hosts_seen"),
+                          ("presets_used", "presets_used"),
+                          ("completion_days", "completion_days")):
+            val = row.get(key)
+            if isinstance(val, list):
+                setattr(s, attr, set(val))
+        s.did_clip = bool(row.get("did_clip"))
+        s.did_schedule = bool(row.get("did_schedule"))
+        s.playlists_expanded = int(row.get("playlists_expanded") or 0)
+        s.did_retry_recover = bool(row.get("did_retry_recover"))
+        s.weekend_warrior = bool(row.get("weekend_warrior"))
+        s.display_name = str(row.get("display_name") or "")
+        s.leaderboard_opt_in = bool(row.get("leaderboard_opt_in"))
+        s.leaderboard_settings_at = row.get("leaderboard_settings_at")
         return s
+
+    # ── leaderboard ─────────────────────────────────────────────────────────
+    def fetch_leaderboard(self) -> list:
+        """Synchronous top-100 leaderboard fetch. Call from a worker thread;
+        returns a list of dicts {user_id, display_name, score, total_completed}.
+        """
+        if not self._is_signed_in:
+            return []
+        try:
+            url = (f"{self._url}/rest/v1/leaderboard"
+                   f"?select=user_id,display_name,score,total_completed"
+                   f"&order=score.desc,total_completed.desc&limit=100")
+            req = urllib.request.Request(url, headers=self._headers(self._bearer()),
+                                         method="GET")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read().decode("utf-8") or "[]")
+        except Exception:
+            return []
+
+    def fetch_my_rank(self, my_score: int) -> Optional[int]:
+        """Synchronous exact rank (1-based) = count of opted-in players with a
+        strictly higher score + 1. Call from a worker thread."""
+        if not self._is_signed_in:
+            return None
+        try:
+            url = (f"{self._url}/rest/v1/leaderboard"
+                   f"?select=user_id&score=gt.{int(my_score)}")
+            headers = self._headers(self._bearer(), json_body=False)
+            headers["Prefer"] = "count=exact"
+            headers["Range"] = "0-0"
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                # Content-Range looks like "0-0/42" (or "0-0/*" when empty).
+                range_header = r.headers.get("Content-Range", "")
+            total = range_header.split("/")[-1] if "/" in range_header else ""
+            if total == "*":
+                return 1
+            n = int(total)
+            return n + 1
+        except Exception:
+            return None
+
+    def fetch_near_me(self, my_score: int):
+        """Synchronous near-me fetch. Returns (above, me_and_below) lists of
+        leaderboard dicts. `above` = up to 4 players with a higher score, closest
+        first (score asc); `me_and_below` = me + up to 4 below (score desc), so
+        the caller can render a window of 9 around the user. Call from a worker
+        thread."""
+        empty = ([], [])
+        if not self._is_signed_in:
+            return empty
+        score = int(my_score)
+        try:
+            above_url = (
+                f"{self._url}/rest/v1/leaderboard"
+                f"?select=user_id,display_name,score,total_completed"
+                f"&score=gt.{score}&order=score.asc,total_completed.asc&limit=4")
+            req = urllib.request.Request(above_url, headers=self._headers(self._bearer()),
+                                         method="GET")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                above = json.loads(r.read().decode("utf-8") or "[]")
+            below_url = (
+                f"{self._url}/rest/v1/leaderboard"
+                f"?select=user_id,display_name,score,total_completed"
+                f"&score=lte.{score}&order=score.desc,total_completed.desc&limit=5")
+            req = urllib.request.Request(below_url, headers=self._headers(self._bearer()),
+                                         method="GET")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                below = json.loads(r.read().decode("utf-8") or "[]")
+            return above, below
+        except Exception:
+            return empty
 
 
 # ── PKCE + loopback helpers ─────────────────────────────────────────────────

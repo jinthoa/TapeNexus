@@ -155,7 +155,7 @@ final class DownloadManager {
                     // completed download survives "Clear done" and stays
                     // browseable / re-downloadable from the Library tab.
                     state.library.archive(it, completedAt: it.completedAt ?? Date())
-                    let unlocked = state.achievements.recordCompletion(totalBytes: it.totalBytes)
+                    let unlocked = state.achievements.recordCompletion(it)
                     let signedIn = state.sync?.isSignedIn ?? false
                     if signedIn {
                         for a in unlocked {

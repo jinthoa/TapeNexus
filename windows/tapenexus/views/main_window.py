@@ -16,6 +16,8 @@ from . import theme
 from .library_view import LibraryView
 from .queue_row import QueueRow
 from .settings_dialog import SettingsDialog
+from .stats_view import StatsView
+from .subscriptions_view import SubscriptionsView
 from .update_dialog import UpdateDialog
 from .auth import AccountControl
 
@@ -72,12 +74,9 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(10)
 
-        # header: brand + paste bar + settings
+        # header: paste bar + settings
         header = QHBoxLayout()
         header.setSpacing(12)
-        brand = QLabel("Tape Nexus")
-        brand.setStyleSheet(f"font-weight: 600; font-size: 14px; color: {theme.TEXT};")
-        header.addWidget(brand)
         header.addStretch(1)
 
         self.paste = QLineEdit()
@@ -154,6 +153,8 @@ class MainWindow(QMainWindow):
         # Queue | Library tabs. The queue page holds the full existing UI;
         # the Library tab is the persistent archive of completed downloads.
         self.library_view = LibraryView(self.state)
+        self.stats_view = StatsView(self.state)
+        self.subs_view = SubscriptionsView(self.state)
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(
             f"QTabWidget::pane {{ border: none; background: {theme.BG}; }}"
@@ -163,6 +164,8 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(queue_page, "Queue")
         self.tabs.addTab(self.library_view, "Library")
+        self.tabs.addTab(self.stats_view, "Insights")
+        self.tabs.addTab(self.subs_view, "Subscriptions")
         self.setCentralWidget(self.tabs)
         self._refresh_filter_counts()
         self._style_filter_buttons()

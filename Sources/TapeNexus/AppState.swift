@@ -18,6 +18,10 @@ final class AppState: ObservableObject {
     @Published var lastLog: [UUID: [String]] = [:]
     @Published var pasteField: String = ""
 
+    /// Transient status for post-download media tools (extract audio / transcode
+    /// / trim). Shown as a banner in the Library tab; cleared after a few seconds.
+    @Published var mediaToolStatus: String?
+
     // v1.0.4: format preview (--list-formats) state, keyed by item id.
     @Published var formatLists: [UUID: [FormatInfo]] = [:]
     @Published var formatsLoading: Set<UUID> = []
@@ -35,6 +39,9 @@ final class AppState: ObservableObject {
     /// Persistent archive of completed downloads — survives "Clear done".
     /// Surfaced as the Library tab; snapshotted from finished queue items.
     let library: LibraryStore
+    /// Channel/playlist subscriptions — polled on an interval so new videos
+    /// auto-queue. Surfaced as the Subscriptions tab.
+    let subscriptions: SubscriptionStore
     /// Optional cloud sync (Supabase). nil when sync.json is empty/absent —
     /// the app stays fully local. When configured + signed in, achievements
     /// sync across machines.
@@ -67,6 +74,7 @@ final class AppState: ObservableObject {
         self.settings = store.settings
         self.achievements = AchievementsManager(supportDir: store.supportDir)
         self.library = LibraryStore(supportDir: store.supportDir)
+        self.subscriptions = SubscriptionStore(supportDir: store.supportDir)
         self.sync = SyncManager(supportDir: store.supportDir)
         let yt = YTDLPController(store: store)
         self.yt = yt
@@ -86,9 +94,20 @@ final class AppState: ObservableObject {
         // currently-done queue items so existing users don't lose their history
         // the first time they hit "Clear done".
         library.seed(from: items)
+        // Count this launch for the secret launch-based achievements. Silent —
+        // no unlock notification at startup, the badges just appear in the popover.
+        _ = achievements.recordLaunch()
         // Republish LibraryStore changes through AppState so views reading
         // `state.library` re-render on archive/remove/delete.
         library.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
+        // Republish AchievementsManager too — the Stats tab and popover read
+        // `state.achievements.stats` and should refresh on completion/launch.
+        achievements.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
+        subscriptions.objectWillChange.sink { [weak self] in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
@@ -227,6 +246,29 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Post-download media tools (extract audio / transcode / trim)
+
+    /// Run an ffmpeg recipe on a Library file and surface a status banner.
+    /// `args` is the full ffmpeg argument list; `out` is the produced file,
+    /// revealed in Finder on success.
+    func runMediaTool(args: [String], out: URL, doneMsg: String) {
+        mediaToolStatus = "Working…"
+        let ffmpeg = yt.ffmpegLocation.appendingPathComponent("ffmpeg")
+        guard FileManager.default.isExecutableFile(atPath: ffmpeg.path) else {
+            mediaToolStatus = "Bundled ffmpeg isn't available."
+            return
+        }
+        MediaTools.run(ffmpeg: ffmpeg, args: args) { [weak self] ok in
+            guard let self else { return }
+            if ok {
+                self.mediaToolStatus = doneMsg
+                self.library.revealPath(out)
+            } else {
+                self.mediaToolStatus = "Couldn't process that file (ffmpeg failed)."
+            }
+        }
+    }
+
     func addCandidate(_ url: String, startImmediately: Bool? = nil) {
         guard !items.contains(where: { $0.url == url }) else { return }
         let start = startImmediately ?? settings.autoStartDownloads
@@ -237,6 +279,66 @@ final class AppState: ObservableObject {
         items.insert(placeholder, at: 0)
         persist()
         verify(id: id, url: url, startImmediately: start)
+    }
+
+    /// Add a candidate that carries its own format preset (used by Subscriptions
+    /// so each feed can target a different quality/format than the global default).
+    func addCandidate(_ url: String, preset: String, startImmediately: Bool? = nil) {
+        guard !items.contains(where: { $0.url == url }) else { return }
+        let start = startImmediately ?? settings.autoStartDownloads
+        let id = UUID()
+        let label = AppSettings.formatLabel(preset: preset, custom: "")
+        let placeholder = DownloadItem(id: id, url: url, status: .resolving,
+                                       formatDesc: label, formatPreset: preset)
+        items.insert(placeholder, at: 0)
+        persist()
+        verify(id: id, url: url, startImmediately: start)
+    }
+
+    // MARK: Subscriptions
+
+    /// Check a single subscription: flat-list its current entries and queue any
+    /// that aren't in the last-seen set. The first check is a baseline — it
+    /// records the entries but queues nothing (no back-catalogue dump). Runs the
+    /// yt-dlp probe off the main thread.
+    func checkSubscription(_ id: UUID) {
+        guard let sub = subscriptions.subs.first(where: { $0.id == id }) else { return }
+        let ytRef = yt
+        let url = sub.url
+        let known = Set(sub.knownURLs)
+        let firstCheck = sub.knownURLs.isEmpty
+        metaQueue.addOperation { [weak self] in
+            let entries = ytRef.simulatePlaylist(url, cap: 200) ?? []
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let entrySet = Set(entries)
+                let newURLs = entries.filter { !known.contains($0) }
+                self.subscriptions.update(id) { s in
+                    s.knownURLs = entries
+                    s.lastCheckedAt = Date()
+                    s.lastNewCount = firstCheck ? 0 : newURLs.count
+                }
+                // Queue only genuinely new videos (skip the baseline pass).
+                if !firstCheck {
+                    for u in newURLs where !self.items.contains(where: { $0.url == u }) {
+                        self.addCandidate(u, preset: sub.preset, startImmediately: true)
+                    }
+                    if !newURLs.isEmpty {
+                        self.achievements.recordPlaylistExpansion()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check every enabled subscription whose interval has elapsed (or that has
+    /// never been checked). Called by the periodic timer and the "Check all" button.
+    func checkAllSubscriptions() {
+        let now = Date()
+        for sub in subscriptions.subs where sub.enabled {
+            let due = sub.lastCheckedAt.map { now.timeIntervalSince($0) >= Double(sub.intervalMinutes) * 60 } ?? true
+            if due { checkSubscription(sub.id) }
+        }
     }
 
     private func verify(id: UUID, url: String, startImmediately: Bool) {
@@ -299,6 +401,19 @@ final class AppState: ObservableObject {
                     // top-to-bottom — same as a batch paste.
                     self.removeItem(id)
                     self.addURLs(entries, startImmediately: startImmediately)
+                    // Achievements: a playlist was expanded into the queue.
+                    let unlocked = self.achievements.recordPlaylistExpansion()
+                    let signedIn = self.sync?.isSignedIn ?? false
+                    if signedIn {
+                        for a in unlocked {
+                            Notifier.shared.post(
+                                title: "🏆 Achievement unlocked",
+                                body: "\(a.title) — \(a.subtitle)")
+                        }
+                        if let sync = self.sync {
+                            Task { await sync.pushAchievements(self.achievements.stats) }
+                        }
+                    }
                 } else {
                     // Not actually a multi-entry playlist → verify as a single video.
                     self.verifySingle(id: id, url: url, startImmediately: startImmediately)
@@ -481,10 +596,17 @@ final class AppState: ObservableObject {
             // auto-start. With auto-start off, plain queued items must wait for
             // the user to press ▶; only scheduled ones fire when their time lands.
             self?.downloads.pumpScheduled()
+            // Subscription poll: checkAllSubscriptions self-filters by each
+            // feed's interval, so a 60s tick is cheap even with many subs.
+            self?.checkAllSubscriptions()
         }
         t.resume()
         quietTimer = t
         evaluateQuietHours()
+        // Kick the first subscription pass shortly after launch.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            self?.checkAllSubscriptions()
+        }
     }
 
     func evaluateQuietHours() {

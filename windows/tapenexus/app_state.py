@@ -19,6 +19,7 @@ from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 from .achievements import Achievement, AchievementsManager
 from .clipboard_monitor import ClipboardMonitor
 from .library_manager import LibraryManager
+from .subscription_manager import SubscriptionManager
 from .models import (
     AppSettings, DownloadItem, FormatInfo, extract_urls, format_label,
     looks_like_playlist,
@@ -139,10 +140,13 @@ class AppState(QObject):
     # (ok, message).
     app_update_available = Signal(str, str)
     app_update_done = Signal(bool, str)
+    # Post-download media tools: transient status banner text (or "" to clear).
+    media_tool_status = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
         self.yt = YTDLPController()
+        self._media_procs: list = []  # keep QProcess refs alive until finished
         # Local download stats + unlocked badges (fun; per-machine for now).
         self.achievements = AchievementsManager(_appdata_dir())
         # Optional cloud sync (Supabase). Stays local-only when unconfigured.
@@ -150,6 +154,9 @@ class AppState(QObject):
         # Persistent archive of completed downloads — survives "Clear done".
         # Surfaced as the Library tab; snapshotted from finished queue items.
         self.library = LibraryManager(_appdata_dir())
+        # Channel/playlist subscriptions — polled on an interval so new videos
+        # auto-queue. Surfaced as the Subscriptions tab.
+        self.subscriptions = SubscriptionManager(_appdata_dir())
         self.clipboard = ClipboardMonitor()
         self.items: List[DownloadItem] = []
         self.settings = AppSettings.default()
@@ -194,6 +201,9 @@ class AppState(QObject):
         # currently-done queue items so existing users don't lose their history
         # the first time they hit "Clear done".
         self.library.seed(self.items)
+        # Count this launch for the secret launch-based achievements. Silent —
+        # no unlock notification at startup, the badges just appear in the popup.
+        self.achievements.record_launch()
         self._meta_pool = ThreadPoolExecutor(
             max_workers=max(1, self.settings.max_concurrent),
             thread_name_prefix="tn-meta")
@@ -225,6 +235,8 @@ class AppState(QObject):
         # Skip / Download and install popup.
         self._pending_update = None  # (latest_tag, exe_url) cached for the popup
         QTimer.singleShot(3000, self._check_app_update)
+        # Kick the first subscription pass shortly after launch.
+        QTimer.singleShot(8000, self.check_all_subscriptions)
 
     # ── persistence ─────────────────────────────────────────────────────────
     def _appdata_file(self, name: str) -> str:
@@ -333,20 +345,104 @@ class AppState(QObject):
     def _on_candidate(self, url: str) -> None:
         self.add_candidate(url, start_immediately=self.settings.auto_start_downloads)
 
-    def add_candidate(self, url: str, start_immediately: bool = None) -> None:
+    # ── post-download media tools ─────────────────────────────────────────────
+    def run_media_tool(self, args: List[str], out: str, done_msg: str) -> None:
+        """Run an ffmpeg recipe on a Library file; emit a status banner and
+        reveal the produced file in Explorer on success."""
+        ffmpeg = os.path.join(self.yt.ffmpeg_dir, "ffmpeg.exe")
+        if not os.path.isfile(ffmpeg):
+            self.media_tool_status.emit("Bundled ffmpeg isn't available.")
+            return
+        self.media_tool_status.emit("Working…")
+        proc = QProcess(self)
+        proc.setProgram(ffmpeg)
+        proc.setArguments(["-y"] + args)
+        self._media_procs.append(proc)
+
+        def _finished(code, _status, p=proc, out=out, msg=done_msg):
+            try:
+                self._media_procs.remove(p)
+            except ValueError:
+                pass
+            p.deleteLater()
+            if code == 0 and os.path.isfile(out):
+                self.media_tool_status.emit(msg)
+                self.library.reveal_path(out)
+            else:
+                self.media_tool_status.emit("Couldn't process that file (ffmpeg failed).")
+
+        proc.finished.connect(_finished)
+        proc.start()
+
+    def add_candidate(self, url: str, start_immediately: bool = None,
+                      preset: str = "") -> None:
         if any(it.url == url for it in self.items):
             return
         if start_immediately is None:
             start_immediately = self.settings.auto_start_downloads
+        use_preset = preset or self.settings.format_preset
         item = DownloadItem.new(
             url,
-            format_desc=format_label(self.settings.format_preset, self.settings.custom_format),
+            format_desc=format_label(use_preset, self.settings.custom_format
+                                     if not preset else ""),
         )
+        if preset:
+            item.format_preset = preset
         item.status = "resolving"
         self.items.insert(0, item)
         self.list_changed.emit()
         self._persist_queue()
         self._verify(item.id, url, start_immediately)
+
+    # ── subscriptions ────────────────────────────────────────────────────────
+    def check_subscription(self, sub_id: str) -> None:
+        """Flat-list a subscription's current entries and queue any that aren't
+        in the last-seen set. First check is a baseline (records entries, queues
+        nothing). Runs the yt-dlp probe on a worker thread."""
+        sub = self.subscriptions.get(sub_id)
+        if not sub:
+            return
+        url = sub.url
+        known = set(sub.known_urls)
+        first_check = not sub.known_urls
+        preset = sub.preset
+
+        def work() -> None:
+            entries = self.yt.simulate_playlist(url, 200) or []
+            entry_set = set(entries)
+            new_urls = [u for u in entries if u not in known]
+            def done() -> None:
+                self.subscriptions.update(
+                    sub_id, known_urls=entries,
+                    last_checked_at=datetime.now().isoformat(),
+                    last_new_count=0 if first_check else len(new_urls))
+                if not first_check:
+                    for u in new_urls:
+                        if not any(it.url == u for it in self.items):
+                            self.add_candidate(u, start_immediately=True, preset=preset)
+                    if new_urls:
+                        self.achievements.record_playlist_expansion()
+            QTimer.singleShot(0, done)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def check_all_subscriptions(self) -> None:
+        """Check every enabled subscription whose interval has elapsed (or that
+        has never been checked). Called by the periodic timer + the Check-all
+        button."""
+        now = datetime.now()
+        for sub in self.subscriptions.subs:
+            if not sub.enabled:
+                continue
+            due = True
+            if sub.last_checked_at:
+                try:
+                    last = datetime.fromisoformat(sub.last_checked_at)
+                    due = (now - last).total_seconds() >= sub.interval_minutes * 60
+                except Exception:
+                    due = True
+            if due:
+                self.check_subscription(sub.id)
 
     # ── verify (simulate / playlist) ─────────────────────────────────────────
     def _verify(self, item_id: str, url: str, start: bool) -> None:
@@ -401,6 +497,10 @@ class AppState(QObject):
             # as a batch paste.
             self._remove(item_id)
             self.add_many(entries, start_immediately=start)
+            # Achievements: a playlist was expanded into the queue.
+            unlocked = self.achievements.record_playlist_expansion()
+            if self.sync.is_signed_in:
+                self.sync.push_achievements(self.achievements.stats)
         else:
             self._verify_single(item_id, url, start)
 
@@ -450,6 +550,9 @@ class AppState(QObject):
         # auto-start. With auto-start off, plain queued items must wait for the
         # user to press Start now; only scheduled ones fire when their time lands.
         self.pump_scheduled()
+        # Subscription poll: check_all_subscriptions self-filters by each feed's
+        # interval, so a 60s tick is cheap even with many subs.
+        self.check_all_subscriptions()
 
     def pump_scheduled(self) -> None:
         if self.is_quiet_hour():
@@ -604,7 +707,7 @@ class AppState(QObject):
             # + sync when signed in — achievements are an account feature now.
             # Badges earned while signed out still unlock locally and appear
             # (and sync) once the user signs in.
-            unlocked = self.achievements.record_completion(it.total_bytes)
+            unlocked = self.achievements.record_completion(it)
             if self.sync.is_signed_in:
                 self.sync.push_achievements(self.achievements.stats)
         else:

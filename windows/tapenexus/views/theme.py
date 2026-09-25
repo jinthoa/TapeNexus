@@ -13,6 +13,8 @@ ACCENT2 = "#4fd1c5"
 OK = "#3fb950"
 WARN = "#d29922"
 ERR = "#f85149"
+BLUE = "#60a5fa"
+PANEL2 = "#1c2030"
 
 
 def apply_dark_theme(app: QApplication) -> None:

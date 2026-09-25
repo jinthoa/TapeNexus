@@ -1,15 +1,16 @@
 """Library tab: a searchable, sortable list of archived completed downloads."""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Optional
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtGui import QPixmap, QGuiApplication, QDesktopServices
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QComboBox,
-    QPushButton, QScrollArea, QSizePolicy, QFrame, QMenu,
+    QPushButton, QScrollArea, QSizePolicy, QFrame, QMenu, QDialog,
 )
 
 from . import theme
@@ -47,6 +48,19 @@ class LibraryView(QWidget):
         self.count_lbl.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         bar.addWidget(self.count_lbl)
         root.addLayout(bar)
+
+        # Post-download tools status banner (auto-clears).
+        self.status_banner = QLabel("")
+        self.status_banner.setStyleSheet(
+            f"background: {theme.PANEL}; color: {theme.TEXT}; font-size: 11px;"
+            f" padding: 7px 16px; border-bottom: 1px solid {theme.LINE};")
+        self.status_banner.setVisible(False)
+        root.addWidget(self.status_banner)
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(lambda: (self.status_banner.setVisible(False),
+                                                    self.status_banner.setText("")))
+        state.media_tool_status.connect(self._on_tool_status)
 
         # scrollable row list
         self.scroll = QScrollArea()
@@ -92,6 +106,15 @@ class LibraryView(QWidget):
         n = len(self.state.library.entries)
         self.count_lbl.setText(f"{n} item{'s' if n != 1 else ''}")
         self.empty.setVisible(not shown)
+
+    def _on_tool_status(self, msg: str) -> None:
+        if not msg:
+            self.status_banner.setVisible(False)
+            self.status_banner.setText("")
+            return
+        self.status_banner.setText(f"🎛  {msg}")
+        self.status_banner.setVisible(True)
+        self._status_timer.start(6000)
 
 
 class LibraryRow(QFrame):
@@ -177,12 +200,41 @@ class LibraryRow(QFrame):
         m.addAction("Reveal in Explorer", lambda: self.state.library.reveal(self.entry.id))
         m.addAction("Open", lambda: self.state.library.open(self.entry.id))
         m.addSeparator()
+        if self.entry.output_file_path:
+            m.addAction("Extract audio (MP3)", self._extract_mp3)
+            m.addAction("Extract audio (AAC/m4a)", self._extract_aac)
+            m.addAction("Transcode to MP4", self._transcode)
+            m.addAction("Trim / clip…", self._trim)
+            m.addSeparator()
         m.addAction("Copy URL", self._copy_url)
         m.addAction("Open in browser", self._open_in_browser)
         m.addSeparator()
         m.addAction("Move file to Trash", lambda: self.state.library.delete_file(self.entry.id))
         m.addAction("Remove from library", lambda: self.state.library.remove(self.entry.id))
         m.exec(self.mapToGlobal(pos))
+
+    # ── post-download media tools ────────────────────────────────────────────
+    def _extract_mp3(self) -> None:
+        from ..media_tools import extract_audio_mp3
+        args, out = extract_audio_mp3(self.entry.output_file_path)
+        self.state.run_media_tool(args, out, f"MP3 extracted to {os.path.basename(out)}.")
+
+    def _extract_aac(self) -> None:
+        from ..media_tools import extract_audio_aac
+        args, out = extract_audio_aac(self.entry.output_file_path)
+        self.state.run_media_tool(args, out, f"Audio extracted to {os.path.basename(out)}.")
+
+    def _transcode(self) -> None:
+        from ..media_tools import transcode_mp4
+        args, out = transcode_mp4(self.entry.output_file_path)
+        self.state.run_media_tool(args, out, f"Transcoded to {os.path.basename(out)}.")
+
+    def _trim(self) -> None:
+        d = TrimDialog(self.entry.output_file_path, self)
+        if d.exec() == QDialog.Accepted:
+            from ..media_tools import trim
+            args, out = trim(self.entry.output_file_path, d.start, d.end)
+            self.state.run_media_tool(args, out, f"Clip saved to {os.path.basename(out)}.")
 
     def _copy_url(self) -> None:
         QGuiApplication.clipboard().setText(self.entry.url)
@@ -213,3 +265,57 @@ class LibraryRow(QFrame):
                                             Qt.SmoothTransformation))
         self._thumb_reply.deleteLater()
         self._thumb_reply = None
+
+
+class TrimDialog(QDialog):
+    """Small dialog to pick a start/end for trimming a Library file into a clip.
+    Times are HH:MM:SS or MM:SS (ffmpeg accepts both)."""
+
+    def __init__(self, path: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Trim / clip")
+        self.start = "00:00:00"
+        self.end = "00:00:30"
+        v = QVBoxLayout(self)
+        v.setSpacing(12)
+        v.setContentsMargins(18, 16, 18, 16)
+        title = QLabel("Trim / clip")
+        title.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {theme.TEXT};")
+        v.addWidget(title)
+        fn = QLabel(os.path.basename(path))
+        fn.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        v.addWidget(fn)
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        sc = QVBoxLayout()
+        sc.addWidget(QLabel("Start"))
+        self.start_edit = QLineEdit(self.start)
+        self.start_edit.setFixedWidth(120)
+        sc.addWidget(self.start_edit)
+        row.addLayout(sc)
+        ec = QVBoxLayout()
+        ec.addWidget(QLabel("End"))
+        self.end_edit = QLineEdit(self.end)
+        self.end_edit.setFixedWidth(120)
+        ec.addWidget(self.end_edit)
+        row.addLayout(ec)
+        v.addLayout(row)
+        hint = QLabel("Times as HH:MM:SS or MM:SS. The clip is re-encoded for a frame-accurate cut.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        v.addWidget(hint)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        clip = QPushButton("Clip")
+        clip.setStyleSheet(f"background: {theme.ACCENT}; color: #0e1014; padding: 6px 16px; border-radius: 6px;")
+        clip.clicked.connect(self._accept)
+        btns.addWidget(cancel)
+        btns.addWidget(clip)
+        v.addLayout(btns)
+
+    def _accept(self) -> None:
+        self.start = self.start_edit.text().strip() or "00:00:00"
+        self.end = self.end_edit.text().strip() or "00:00:30"
+        self.accept()

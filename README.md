@@ -38,6 +38,11 @@ A quick tour of what's in the box, including the recently added features:
 - **Link identities** *(v1.0.16)* — signed in with email? Add Google. Signed in with Google? Add an email + password. Both providers map to **one account** so your achievements share a single row — no separate profiles, no merging. The avatar popover shows **Link Google** / **Link email** (or ✓ once linked). Cloud sync is strictly opt-in and gated by `sync.json`; when it's not configured the app stays fully local.
 - **Secure session storage** *(v1.0.18)* — your cloud sign-in session is now stored in the OS keychain (macOS **Keychain** / Windows **Credential Manager**) instead of a plaintext JSON file, so it survives restarts without re-typing and isn't readable by other apps. First launch after upgrade migrates the old file into the keychain and deletes it. If the secure store is unavailable (keychain locked down, Credential Manager refused), it falls back to the file with a one-shot tray warning — never blocks you out.
 - **Persistent Library tab** *(v1.0.18)* — completed downloads are archived into a separate **Library** tab (Queue | Library) that survives "Clear done", so finished downloads stay browseable and re-downloadable instead of vanishing. Each row shows the thumbnail, title, host · size · when, with **Re-download**, **Reveal in Finder/Explorer**, **Open**, and **Remove** actions (and a right-click **Move file to Trash**). Search + sort by Newest / Title / Size / Host. Re-downloading an already-archived video refreshes its row instead of duplicating; the archive is capped at 2,000 (oldest drop off). On first run, your currently-done queue items seed the library so no history is lost.
+- **Achievements 2.0 + global leaderboard** *(v1.0.19)* — the avatar popover now shows a **stats strip** (composite score · best streak · hosts) and a uniform, scrollable grid of **28 badges** (23 open + 5 secret). Locked grindy badges show a live **progress bar** ("47/50"). A global, **opt-in** leaderboard ranks everyone by a composite score (downloads · data · badges · hosts · streaks); a **Top 100 / Near you** view shows the players around your rank. Only your display name, score, and download count are public (via a security-definer `leaderboard` view); full stats stay private. Secret badges (launch the app once, download 200 videos, …) are hidden until unlocked, then revealed with a purple tint.
+- **Insights tab** *(v1.0.20)* — a new **Queue | Library | Insights | Subscriptions** layout. Insights is a read-only dashboard built from data the app already collects: downloads over the last 12 weeks, top hosts, formats used, and stat cards (downloads / total data / best streak / hosts / score). No backend, no sync changes.
+- **Subscriptions tab** *(v1.0.20)* — paste a channel or playlist URL, pick a format preset and a check interval, and TapeNexus polls for new entries on that cadence and **auto-queues** them. The first check is a *baseline* — it records the current entries but queues nothing, so adding a channel doesn't dump its entire back catalogue into the queue; only videos published after that go in. Each feed can target its own format preset.
+- **Local backup / restore** *(v1.0.20)* — one click in Settings exports your library, achievements, settings, and queue into a single `.json` bundle, and restore it on another machine to migrate without a cloud account. **Credentials aren't included** in the bundle, so a shared backup never leaks auth tokens.
+- **Post-download tools** *(v1.0.20)* — right-click a Library entry to **extract audio** (MP3 or AAC/m4a), **transcode to MP4**, or **trim a clip** (start/end → frame-accurate cut), all via the bundled ffmpeg. The produced file is revealed in Finder/Explorer.
 - **Subtitle language picker, SponsorBlock, metadata/subtitle embedding**.
 - **Completion notifications + Dock badge** — native notification when a download finishes or fails; Dock badge shows the active count.
 - **Menu-bar mode** — run as a status-bar-only app with no Dock icon.
@@ -50,11 +55,11 @@ A quick tour of what's in the box, including the recently added features:
 ## Download & install
 
 ### macOS
-1. Download **`TapeNexus-1.0.18.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
+1. Download **`TapeNexus-1.0.20.pkg`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest).
 2. **Double-click the `.pkg`** — the macOS Installer opens and walks you through it. It's signed with a Developer ID and notarized by Apple, so Gatekeeper lets it run with no warning, no right-click → Open, no `xattr` step.
 3. Launch from `/Applications`.
 
-   Prefer the terminal? `sudo installer -pkg ~/Downloads/TapeNexus-1.0.18.pkg -target /`
+   Prefer the terminal? `sudo installer -pkg ~/Downloads/TapeNexus-1.0.20.pkg -target /`
 
 ### Windows
 1. Download **`TapeNexus-<ver>-win64.exe`** from the [latest release](https://github.com/jinthoa/TapeNexus/releases/latest) — a single portable executable.

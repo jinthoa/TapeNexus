@@ -291,6 +291,10 @@ final class SyncManager: ObservableObject {
     /// or both). Used by the avatar menu to show "Link Google" / "Link email".
     var providers: [String] { session?.user.providers ?? [] }
 
+    /// The signed-in user's id (nil when signed out). Used to highlight the
+    /// current user's row in the leaderboard.
+    var userId: String? { session?.user.id }
+
     /// Extract linked provider names from a GoTrue user object.
     private static func providers(from user: [String: Any]) -> [String] {
         var out: [String] = []
@@ -336,6 +340,71 @@ final class SyncManager: ObservableObject {
               let remote = Self.stats(from: row) else { return }
         manager.merge(remote)
         await pushAchievements(manager.stats)
+    }
+
+    // MARK: - Leaderboard
+
+    /// Fetch the top-100 public leaderboard (opt-in users only, safe columns
+    /// only — backed by the `leaderboard` view, not the raw achievements table).
+    func fetchLeaderboard() async -> [LeaderboardEntry] {
+        guard session != nil else { return [] }
+        let rows = await getRows(path: "/rest/v1/leaderboard?select=user_id,display_name,score,total_completed&order=score.desc,total_completed.desc&limit=100")
+        return rows.compactMap(Self.entry(from:))
+    }
+
+    /// The user's global rank (1-based) = number of opted-in players with a
+    /// strictly higher score + 1. Uses a ranged count query so it's exact even
+    /// beyond the top-100. Returns nil if it can't be determined.
+    func fetchMyRank(myScore: Int64) async -> Int? {
+        guard let s = session else { return nil }
+        var req = URLRequest(url: URL(string: "\(url)/rest/v1/leaderboard?select=user_id&score=gt.\(myScore)")!)
+        req.httpMethod = "GET"
+        req.setValue(anonKey, forHTTPHeaderField: "apikey")
+        req.setValue("Bearer \(s.accessToken)", forHTTPHeaderField: "Authorization")
+        // Ask PostgREST for an exact total in the Content-Range header, and
+        // request zero rows so the body stays tiny.
+        req.setValue("count=exact", forHTTPHeaderField: "Prefer")
+        req.setValue("0-0", forHTTPHeaderField: "Range")
+        guard let (_, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse,
+              let range = http.value(forHTTPHeaderField: "Content-Range") else { return nil }
+        // Content-Range looks like "0-0/42" (or "0-0/*" when empty).
+        let total = range.split(separator: "/").last
+        if let t = total, t == "*" { return 1 }       // nobody above → rank 1
+        if let n = total.flatMap({ Int($0) }) { return n + 1 }
+        return nil
+    }
+
+    /// A window of entries around the user: `above` = the closest entries with a
+    /// strictly higher score (closest first), `meAndBelow` = the user + entries
+    /// with a lower-or-equal score (the user first, descending). Used for the
+    /// "Near you" leaderboard view so players ranked outside the top-100 still
+    /// see their neighbours. Approximate — ties are ordered by total_completed.
+    func fetchNearMe(myScore: Int64) async -> (above: [LeaderboardEntry], meAndBelow: [LeaderboardEntry]) {
+        guard session != nil else { return ([], []) }
+        let cols = "user_id,display_name,score,total_completed"
+        async let aboveData = getRows(path: "/rest/v1/leaderboard?select=\(cols)&score=gt.\(myScore)&order=score.asc,total_completed.asc&limit=4")
+        async let belowData = getRows(path: "/rest/v1/leaderboard?select=\(cols)&score=lte.\(myScore)&order=score.desc,total_completed.desc&limit=5")
+        let (a, b) = await (aboveData, belowData)
+        return (a.compactMap(Self.entry(from:)), b.compactMap(Self.entry(from:)))
+    }
+
+    private func getRows(path: String) async -> [[String: Any]] {
+        var req = URLRequest(url: URL(string: "\(url)\(path)")!)
+        req.httpMethod = "GET"
+        req.setValue(anonKey, forHTTPHeaderField: "apikey")
+        if let s = session { req.setValue("Bearer \(s.accessToken)", forHTTPHeaderField: "Authorization") }
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        return rows
+    }
+
+    private static func entry(from r: [String: Any]) -> LeaderboardEntry? {
+        guard let uid = r["user_id"] as? String,
+              let name = r["display_name"] as? String else { return nil }
+        return LeaderboardEntry(userId: uid, displayName: name,
+                                score: Int64(r["score"] as? Int ?? 0),
+                                totalCompleted: (r["total_completed"] as? Int) ?? 0)
     }
 
     // MARK: - HTTP
@@ -403,6 +472,10 @@ final class SyncManager: ObservableObject {
         if let d = stats.firstCompletedAt {
             let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; firstISO = f.string(from: d)
         } else { firstISO = nil }
+        let settingsISO: String?
+        if let d = stats.leaderboardSettingsAt {
+            let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; settingsISO = f.string(from: d)
+        } else { settingsISO = nil }
         var row: [String: Any] = [
             "user_id": uid,
             "total_completed": stats.totalCompleted,
@@ -410,9 +483,21 @@ final class SyncManager: ObservableObject {
             "unlocked_ids": Array(stats.unlockedIDs),
             "night_owl": stats.nightOwl,
             "early_bird": stats.earlyBird,
+            "hosts_seen": Array(stats.hostsSeen),
+            "presets_used": Array(stats.presetsUsed),
+            "completion_days": Array(stats.completionDays),
+            "did_clip": stats.didClip,
+            "did_schedule": stats.didSchedule,
+            "playlists_expanded": stats.playlistsExpanded,
+            "did_retry_recover": stats.didRetryRecover,
+            "weekend_warrior": stats.weekendWarrior,
+            "score": stats.score,
+            "display_name": stats.displayName,
+            "leaderboard_opt_in": stats.leaderboardOptIn,
             "updated_at": iso,
         ]
         if let firstISO { row["first_completed_at"] = firstISO }
+        if let settingsISO { row["leaderboard_settings_at"] = settingsISO }
         return row
     }
 
@@ -428,11 +513,34 @@ final class SyncManager: ObservableObject {
         }
         s.nightOwl = (row["night_owl"] as? Bool) ?? false
         s.earlyBird = (row["early_bird"] as? Bool) ?? false
+        if let arr = row["hosts_seen"] as? [String] { s.hostsSeen = Set(arr) }
+        if let arr = row["presets_used"] as? [String] { s.presetsUsed = Set(arr) }
+        if let arr = row["completion_days"] as? [String] { s.completionDays = Set(arr) }
+        s.didClip = (row["did_clip"] as? Bool) ?? false
+        s.didSchedule = (row["did_schedule"] as? Bool) ?? false
+        s.playlistsExpanded = (row["playlists_expanded"] as? Int) ?? 0
+        s.didRetryRecover = (row["did_retry_recover"] as? Bool) ?? false
+        s.weekendWarrior = (row["weekend_warrior"] as? Bool) ?? false
+        s.displayName = (row["display_name"] as? String) ?? ""
+        s.leaderboardOptIn = (row["leaderboard_opt_in"] as? Bool) ?? false
         if let str = row["first_completed_at"] as? String {
             let f = ISO8601DateFormatter(); s.firstCompletedAt = f.date(from: str)
         }
+        if let str = row["leaderboard_settings_at"] as? String {
+            let f = ISO8601DateFormatter(); s.leaderboardSettingsAt = f.date(from: str)
+        }
         return s
     }
+}
+
+// MARK: - Leaderboard models
+
+struct LeaderboardEntry: Identifiable, Equatable {
+    let userId: String
+    let displayName: String
+    let score: Int64
+    let totalCompleted: Int
+    var id: String { userId }
 }
 
 // MARK: - Config + session models

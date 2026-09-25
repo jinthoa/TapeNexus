@@ -18,28 +18,10 @@ struct QueueView: View {
                 delegate: URLDropDelegate(state: state))
     }
 
-    // MARK: Header — brand, paste field, settings gear
+    // MARK: Header — paste field, settings gear
 
     private var header: some View {
         HStack(spacing: 12) {
-            HStack(spacing: 10) {
-                if let appIcon = Bundle.main.image(forResource: "AppIcon") {
-                    Image(nsImage: appIcon)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: 26, height: 26)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                } else {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(LinearGradient(colors: [Theme.accent, Theme.accent2],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 26, height: 26)
-                        .overlay(Image(systemName: "arrow.down.circle.fill")
-                            .foregroundStyle(.white).font(.system(size: 14)))
-                }
-                Text("Tape Nexus").font(.system(size: 14, weight: .semibold))
-            }
-
             Spacer()
 
             pasteBar
@@ -94,24 +76,7 @@ struct QueueView: View {
             .frame(width: 300)
             .labelsHidden()
 
-            HStack(spacing: 6) {
-                Image(systemName: "folder").foregroundStyle(Theme.muted)
-                Text(state.settings.destinationFolder).foregroundStyle(Theme.text)
-            }.chipStyle()
-
-            HStack(spacing: 6) {
-                Image(systemName: "point.3.connectedtriangle.bottomright.filled").foregroundStyle(Theme.muted)
-                Text("\(state.settings.maxConcurrent)").foregroundStyle(Theme.text)
-            }.chipStyle()
-
             Spacer()
-
-            if state.settings.autoGrabClipboard {
-                HStack(spacing: 6) {
-                    Image(systemName: "clipboard.fill").foregroundStyle(Theme.ok)
-                    Text("auto-grab").foregroundStyle(Theme.muted)
-                }.chipStyle()
-            }
 
             Button(action: { state.startAll() }) {
                 Label("Start all", systemImage: "play.fill").font(.system(size: 12))

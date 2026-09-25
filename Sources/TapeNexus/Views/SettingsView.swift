@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Settings presented as a modal sheet (opened from Tape Nexus ▸ Settings… ⌘,).
 /// Edits a local draft; Save commits via `state.updateSettings`, Cancel drops.
@@ -7,6 +8,9 @@ struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: AppSettings = .default
     @State private var pickFolder = false
+    @State private var backupMessage: String?
+    @State private var restoreError: String?
+    @State private var showRelaunch = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -214,6 +218,24 @@ struct SettingsSheet: View {
                                 .font(.system(size: 11)).foregroundStyle(Theme.muted)
                         }
                     }
+                    section("Backup") {
+                        row("Local backup") {
+                            HStack {
+                                Button("Export backup…") { exportBackup() }
+                                    .buttonStyle(.bordered).controlSize(.small)
+                                Button("Restore backup…") { restoreBackup() }
+                                    .buttonStyle(.bordered).controlSize(.small)
+                            }
+                        }
+                        Text("Export your library, achievements, settings, and queue into one .json file. Restore it on another machine to migrate without a cloud account. Credentials aren't included.")
+                            .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        if let backupMessage {
+                            Text(backupMessage).font(.system(size: 11)).foregroundStyle(Theme.ok)
+                        }
+                        if let restoreError {
+                            Text(restoreError).font(.system(size: 11)).foregroundStyle(Theme.err)
+                        }
+                    }
                 }
                 .padding(18)
                 .frame(maxWidth: 560, alignment: .leading)
@@ -248,6 +270,64 @@ struct SettingsSheet: View {
                 draft.destinationFolder = p
             }
         }
+        .alert("Restart to apply", isPresented: $showRelaunch) {
+            Button("Restart now") { relaunch() }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("Your library, achievements, settings, and queue were restored. Restart TapeNexus to load them.")
+        }
+    }
+
+    // MARK: Backup / restore
+
+    private func exportBackup() {
+        backupMessage = nil
+        restoreError = nil
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "TapeNexus-backup.json"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let data = BackupManager.exportData(supportDir: state.store.supportDir) else {
+            restoreError = "Couldn't build a backup from the current state."
+            return
+        }
+        do {
+            try data.write(to: url, options: .atomic)
+            backupMessage = "Exported backup to \(url.lastPathComponent)."
+        } catch {
+            restoreError = "Couldn't write the backup file."
+        }
+    }
+
+    private func restoreBackup() {
+        backupMessage = nil
+        restoreError = nil
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let data = try? Data(contentsOf: url) else {
+            restoreError = "Couldn't read that backup file."
+            return
+        }
+        do {
+            _ = try BackupManager.importData(data, supportDir: state.store.supportDir)
+            // Pull the restored files into the live managers so a later persist
+            // can't clobber them with pre-restore state before the restart.
+            state.library.reload()
+            state.achievements.reload()
+            showRelaunch = true
+        } catch {
+            restoreError = error.localizedDescription
+        }
+    }
+
+    private func relaunch() {
+        let cfg = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: cfg)
+        NSApp.terminate(nil)
     }
 
     private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {

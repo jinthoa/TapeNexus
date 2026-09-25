@@ -71,6 +71,16 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    /// Re-read `library.json` from disk. Used after a backup restore so the
+    /// in-memory archive matches the restored file (and a debounced persist
+    /// can't clobber it with the pre-restore entries).
+    func reload() {
+        if let snap = Self.load(url) {
+            entries = snap.entries
+            didLoad = true
+        }
+    }
+
     // MARK: - Queries
 
     func entries(matching search: String, sortedBy sort: LibrarySort) -> [LibraryEntry] {
@@ -148,6 +158,12 @@ final class LibraryStore: ObservableObject {
     func reveal(_ id: UUID) {
         guard let e = entry(id), !e.outputFilePath.isEmpty else { return }
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: (e.outputFilePath as NSString).deletingLastPathComponent)
+    }
+
+    /// Reveal an arbitrary path in Finder (used by post-download tools to show
+    /// a freshly produced audio/clip file that isn't a Library entry).
+    func revealPath(_ url: URL) {
+        NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
     }
 
     func open(_ id: UUID) {

@@ -67,6 +67,7 @@ struct ProfilePopover: View {
     @State private var linkError: String?
     @State private var linking = false
     @State private var showSetPassword = false
+    @State private var showLeaderboard = false
 
     private var hasGoogle: Bool { sync.providers.contains("google") }
     private var hasEmail: Bool { sync.providers.contains("email") }
@@ -86,11 +87,32 @@ struct ProfilePopover: View {
                         .foregroundStyle(Theme.text).lineLimit(1)
                     Text("\(achievements.stats.totalCompleted) downloads · \(achievements.formattedTotalBytes)")
                         .font(.system(size: 10)).foregroundStyle(Theme.muted)
+                    // Surface the new expanded stats: composite score, best
+                    // streak, distinct hosts seen.
+                    HStack(spacing: 10) {
+                        Label("\(achievements.stats.score)", systemImage: "trophy")
+                        Label("\(achievements.stats.bestStreak)d", systemImage: "flame")
+                        Label("\(achievements.stats.hostsSeen.count)", systemImage: "globe")
+                    }
+                    .font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.muted)
+                    .labelStyle(.titleAndIcon)
                 }
                 Spacer()
                 Button("Sign out") { Task { await sync.signOut() } }
                     .buttonStyle(.bordered).controlSize(.small)
             }
+            Button(action: { showLeaderboard = true }) {
+                HStack {
+                    Image(systemName: "trophy")
+                    Text("Leaderboard")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.muted)
+                }
+                .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.bordered).controlSize(.small)
             Divider().overlay(Theme.line)
 
             // Identity linking — show whichever provider isn't connected yet.
@@ -123,14 +145,23 @@ struct ProfilePopover: View {
 
             Text("ACHIEVEMENTS")
                 .font(.system(size: 9, weight: .bold)).tracking(1.3).foregroundStyle(Theme.muted)
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                ForEach(Achievement.allCases) { a in
-                    AchievementBadge(achievement: a,
-                                     unlocked: achievements.isUnlocked(a))
+            // 23 badges now — wrap in a ScrollView with a bounded height so the
+            // popover never grows past the screen and the grid stays reachable.
+            // Adaptive columns keep two per row at this width but widen
+            // gracefully if the popover is made wider.
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8),
+                                     GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    ForEach(Achievement.allCases) { a in
+                        AchievementBadge(achievement: a,
+                                         unlocked: achievements.isUnlocked(a),
+                                         stats: achievements.stats)
+                    }
                 }
             }
+            .frame(maxHeight: 400)
         }
-        .padding(14).frame(width: 320)
+        .padding(14).frame(width: 440)
         .background(Theme.bg)
         .overlay {
             if linking {
@@ -142,6 +173,9 @@ struct ProfilePopover: View {
         }
         .sheet(isPresented: $showSetPassword) {
             SetPasswordSheet(sync: sync, done: { showSetPassword = false })
+        }
+        .sheet(isPresented: $showLeaderboard) {
+            LeaderboardSheet(sync: sync, achievements: achievements)
         }
     }
 
@@ -385,31 +419,260 @@ struct GoogleGLogo: View {
     }
 }
 
+/// Global, opt-in leaderboard. Shows the user's opt-in toggle + display name,
+/// their rank + composite score, and the top-100 board (their row
+/// highlighted). Opting in exposes only display_name/score/total_completed via
+/// the `leaderboard` view — full stats stay private.
+struct LeaderboardSheet: View {
+    @ObservedObject var sync: SyncManager
+    @ObservedObject var achievements: AchievementsManager
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var entries: [LeaderboardEntry] = []
+    @State private var nearAbove: [LeaderboardEntry] = []
+    @State private var nearBelow: [LeaderboardEntry] = []
+    @State private var myRank: Int?
+    @State private var loading = true
+    @State private var saving = false
+    @State private var displayName = ""
+    @State private var optIn = false
+    @State private var mode = 0            // 0 = Top 100, 1 = Near you
+    @State private var error: String?
+
+    private var myId: String? { sync.userId }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("Leaderboard", systemImage: "trophy")
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16)).foregroundStyle(Theme.muted)
+                }.buttonStyle(.plain).help("Close")
+            }
+            .padding(.horizontal, 18).padding(.vertical, 12)
+            Divider().overlay(Theme.line)
+
+            VStack(alignment: .leading, spacing: 14) {
+                // Opt-in profile
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Show me on the board")
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.text)
+                    HStack(spacing: 10) {
+                        Toggle("", isOn: $optIn).toggleStyle(.switch).controlSize(.small).labelsHidden()
+                        TextField("Display name", text: $displayName)
+                            .textFieldStyle(.roundedBorder).controlSize(.small)
+                            .disabled(!optIn)
+                        Button(action: { saveProfile() }) {
+                            if saving { ProgressView().controlSize(.small) } else { Text("Save") }
+                        }
+                        .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small)
+                        .disabled(saving || !optIn || displayName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    Text("Only your display name, score, and download count are public. Everything else stays private.")
+                        .font(.system(size: 9)).foregroundStyle(Theme.muted)
+                }
+                .padding(10)
+                .background(Theme.panel2)
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line))
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+
+                // Your rank + score
+                HStack(spacing: 18) {
+                    stat("Your rank", myRank.map { "#\($0)" } ?? "—")
+                    stat("Your score", "\(achievements.stats.score)")
+                    stat("Downloads", "\(achievements.stats.totalCompleted)")
+                    Spacer()
+                    Button(action: { Task { await load() } }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    }.buttonStyle(.plain).help("Refresh")
+                }
+
+                if let error {
+                    Text(error).font(.system(size: 11)).foregroundStyle(Theme.err)
+                }
+
+                // Board: Top 100 or Near you.
+                Picker("", selection: $mode) {
+                    Text("Top 100").tag(0)
+                    Text("Near you").tag(1)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+
+                if loading {
+                    HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+                        .padding(.vertical, 24)
+                } else if mode == 0 && entries.isEmpty {
+                    Text("No one's on the board yet — be the first.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 24)
+                } else if mode == 1 && nearAbove.isEmpty && nearBelow.isEmpty {
+                    Text("No one's on the board yet — be the first.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 24)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            if mode == 0 {
+                                ForEach(Array(entries.enumerated()), id: \.element.id) { idx, e in
+                                    leaderboardRow(rank: idx + 1, entry: e, isMe: e.userId == myId)
+                                }
+                            } else {
+                                nearMeRows
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(18)
+
+            Spacer()
+            Divider().overlay(Theme.line)
+            HStack { Spacer()
+                Button("Done") { dismiss() }.buttonStyle(.bordered).controlSize(.regular)
+            }.padding(.horizontal, 18).padding(.vertical, 12)
+        }
+        .frame(width: 460, height: 560)
+        .background(Theme.bg)
+        .task { await load() }
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.text)
+            Text(label).font(.system(size: 9)).foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func leaderboardRow(rank: Int, entry: LeaderboardEntry, isMe: Bool) -> some View {
+        HStack(spacing: 10) {
+            Text(rank > 0 ? "\(rank)" : "—").font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(rank > 0 && rank <= 3 ? Theme.accent : Theme.muted).frame(width: 28, alignment: .leading)
+            Text(entry.displayName).font(.system(size: 12, weight: isMe ? .bold : .medium))
+                .foregroundStyle(isMe ? Theme.accent : Theme.text).lineLimit(1)
+            Spacer()
+            Text("\(entry.score)").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text)
+                .frame(width: 70, alignment: .trailing)
+            Text("\(entry.totalCompleted) dl").font(.system(size: 10)).foregroundStyle(Theme.muted)
+                .frame(width: 50, alignment: .trailing)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(isMe ? Theme.accent.opacity(0.12) : Color.clear)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(isMe ? Theme.accent.opacity(0.4) : Color.clear))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// "Near you" rows: closest entries above (farthest-first so it reads
+    /// top-to-bottom), then the user + entries below. Ranks derive from
+    /// `myRank`; if the rank couldn't be determined we show "—".
+    private var nearMeRows: some View {
+        let r = myRank ?? 0
+        let above = Array(nearAbove.reversed())
+        let aboveStart = r - nearAbove.count   // rank of the farthest shown above
+        return VStack(spacing: 4) {
+            ForEach(Array(above.enumerated()), id: \.element.id) { i, e in
+                leaderboardRow(rank: aboveStart + i, entry: e, isMe: false)
+            }
+            ForEach(Array(nearBelow.enumerated()), id: \.element.id) { i, e in
+                leaderboardRow(rank: r + i, entry: e, isMe: e.userId == myId)
+            }
+        }
+    }
+
+    private func load() async {
+        loading = true; error = nil
+        displayName = achievements.stats.displayName
+        optIn = achievements.stats.leaderboardOptIn
+        let score = achievements.stats.score
+        async let board = sync.fetchLeaderboard()
+        async let rank = sync.fetchMyRank(myScore: score)
+        async let near = sync.fetchNearMe(myScore: score)
+        let (b, r, n) = await (board, rank, near)
+        entries = b
+        myRank = r
+        nearAbove = n.above
+        nearBelow = n.meAndBelow
+        loading = false
+    }
+
+    private func saveProfile() {
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard optIn, !name.isEmpty else { return }
+        saving = true; error = nil
+        achievements.setLeaderboardProfile(name: name, optIn: optIn)
+        Task {
+            await sync.pushAchievements(achievements.stats)
+            await load()
+            saving = false
+        }
+    }
+}
+
 /// One row in the Achievements grid: icon + title + subtitle + lock/check.
 /// Shared by the profile popover (and previously the Settings panel).
 struct AchievementBadge: View {
     let achievement: Achievement
     let unlocked: Bool
+    let stats: AchievementStats
+
+    /// Secret achievements hide their title/subtitle/symbol until unlocked.
+    private var hidden: Bool { achievement.secret && !unlocked }
+    private var accent: Color { unlocked ? (achievement.secret ? Color.purple : Theme.accent) : Theme.muted }
+    /// Progress bar only on locked grindy badges (target >= 2).
+    private var prog: (current: Double, target: Double, unit: String)? {
+        guard !unlocked else { return nil }
+        guard let p = achievement.progress(in: stats), p.target >= 2 else { return nil }
+        return p
+    }
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: achievement.symbol)
-                .font(.system(size: 17))
-                .foregroundStyle(unlocked ? Theme.accent : Theme.muted)
+            Image(systemName: hidden ? "questionmark.circle" : achievement.symbol)
+                .font(.system(size: 18))
+                .foregroundStyle(accent)
                 .opacity(unlocked ? 1 : 0.45)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(achievement.title).font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(unlocked ? Theme.text : Theme.muted)
-                Text(achievement.subtitle).font(.system(size: 10))
-                    .foregroundStyle(Theme.muted).lineLimit(1)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(hidden ? "Secret" : achievement.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(unlocked ? (achievement.secret ? Color.purple : Theme.text) : Theme.muted)
+                    if achievement.secret && unlocked {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 9)).foregroundStyle(Color.purple)
+                    }
+                }
+                .lineLimit(1)   // uniform title size — never scale or mid-word wrap
+                if let prog {
+                    // Grindy locked badge: 1-line description + a thin progress bar.
+                    Text(hidden ? "Hidden — keep going to reveal." : achievement.subtitle)
+                        .font(.system(size: 10)).foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        ProgressView(value: min(max(prog.current / prog.target, 0), 1))
+                            .progressViewStyle(.linear)
+                            .controlSize(.small)
+                        Text("\(Int(prog.current))/\(Int(prog.target))\(prog.unit)")
+                            .font(.system(size: 9, weight: .medium)).foregroundStyle(Theme.muted)
+                            .monospacedDigit()
+                    }
+                } else {
+                    Text(hidden ? "Hidden — keep going to reveal." : achievement.subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.muted)
+                        .lineLimit(2)   // full description, up to 2 lines
+                }
             }
             Spacer()
             Image(systemName: unlocked ? "checkmark.circle.fill" : "lock.fill")
                 .font(.system(size: 12))
                 .foregroundStyle(unlocked ? Theme.ok : Theme.muted)
         }
-        .padding(10)
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .frame(height: 64, alignment: .top)   // uniform cell height → even grid spacing
         .background(Theme.panel2)
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line))
         .clipShape(RoundedRectangle(cornerRadius: 9))

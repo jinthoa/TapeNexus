@@ -1,17 +1,18 @@
 """Settings dialog (opened from File ▸ Settings…)."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QProcess
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QHBoxLayout, QPushButton, QComboBox,
     QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QFileDialog, QGroupBox,
-    QScrollArea, QWidget, QLabel,
+    QScrollArea, QWidget, QLabel, QMessageBox,
 )
 
 from ..models import (
     AppSettings, FORMAT_PRESETS, COOKIE_BROWSERS, CONVERT_FORMATS,
     TRANSCODE_VIDEO_CODECS, TRANSCODE_AUDIO_CODECS,
 )
+from ..backup import export_bundle, import_bundle
 from . import theme
 
 
@@ -174,6 +175,32 @@ class SettingsDialog(QDialog):
         misc_layout.addRow("To (hour)", self.quiet_end)
         form.addRow(misc)
 
+        # Backup / restore
+        bk = QGroupBox("Backup")
+        bk_layout = QFormLayout(bk)
+        brow = QHBoxLayout()
+        brow.setSpacing(8)
+        exp = QPushButton("Export backup…")
+        imp = QPushButton("Restore backup…")
+        for b in (exp, imp):
+            b.setStyleSheet(
+                f"QPushButton {{ background: {theme.PANEL}; border: 1px solid {theme.LINE};"
+                f" color: {theme.TEXT}; padding: 4px 12px; border-radius: 6px; }}"
+                f"QPushButton:hover {{ border: 1px solid {theme.ACCENT}; }}")
+        exp.clicked.connect(self._export_backup)
+        imp.clicked.connect(self._import_backup)
+        brow.addWidget(exp)
+        brow.addWidget(imp)
+        brow.addStretch(1)
+        bk_layout.addRow("Local backup", brow)
+        bk_hint = QLabel("Export your library, achievements, settings, and queue into one .json file. "
+                         "Restore it on another machine to migrate without a cloud account. "
+                         "Credentials aren't included.")
+        bk_hint.setWordWrap(True)
+        bk_hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 10px;")
+        bk_layout.addRow(bk_hint)
+        form.addRow(bk)
+
         scroll.setWidget(inner)
         outer.addWidget(scroll, 1)
 
@@ -197,6 +224,62 @@ class SettingsDialog(QDialog):
         d = QFileDialog.getExistingDirectory(self, "Choose destination", self.dest.text() or "")
         if d:
             self.dest.setText(d)
+
+    # ── backup / restore ─────────────────────────────────────────────────────
+    def _appdata_dir(self) -> str:
+        from ..app_state import _appdata_dir
+        return _appdata_dir()
+
+    def _export_backup(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export backup", "TapeNexus-backup.json", "JSON (*.json)")
+        if not path:
+            return
+        data = export_bundle(self._appdata_dir())
+        if data is None:
+            QMessageBox.warning(self, "Backup", "Couldn't build a backup from the current state.")
+            return
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Backup",
+                                    f"Exported backup to:\n{path}")
+        except Exception:
+            QMessageBox.warning(self, "Backup", "Couldn't write the backup file.")
+
+    def _import_backup(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Restore backup", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            import_bundle(data, self._appdata_dir())
+        except ValueError as e:
+            QMessageBox.warning(self, "Restore", str(e))
+            return
+        except Exception:
+            QMessageBox.warning(self, "Restore", "Couldn't read that backup file.")
+            return
+        # Pull restored files into the live managers so a later save can't
+        # clobber them with pre-restore state before the restart.
+        self.state.library.reload()
+        self.state.achievements.reload()
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Restore")
+        box.setText("Your library, achievements, settings, and queue were restored. "
+                    "Restart TapeNexus to load them.")
+        now = box.addButton("Restart now", QMessageBox.AcceptRole)
+        later = box.addButton("Later", QMessageBox.RejectRole)
+        box.setDefaultButton(now)
+        box.exec()
+        if box.clickedButton() is now:
+            import sys
+            QProcess.startDetached(sys.executable, [])
+            from PySide6.QtWidgets import QApplication
+            QApplication.quit()
 
     @staticmethod
     def _reveal(path: str) -> None:

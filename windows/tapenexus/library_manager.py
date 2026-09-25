@@ -95,6 +95,12 @@ class LibraryManager(QObject):
         except Exception:
             self.entries = []
 
+    def reload(self) -> None:
+        """Re-read library.json from disk. Used after a backup restore so a
+        later _save() can't clobber the restored file with old entries."""
+        self._load()
+        self.library_changed.emit()
+
     def _save(self) -> None:
         snap = {"version": 1, "entries": [e.to_dict() for e in self.entries]}
         try:
@@ -167,6 +173,17 @@ class LibraryManager(QObject):
         except Exception:
             try:
                 os.startfile(os.path.dirname(e.output_file_path))  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+    def reveal_path(self, path: str) -> None:
+        """Reveal an arbitrary path in Explorer (post-download tools produce
+        files that aren't Library entries)."""
+        try:
+            subprocess.Popen(["explorer", "/select,", os.path.abspath(path)])
+        except Exception:
+            try:
+                os.startfile(os.path.dirname(path))  # type: ignore[attr-defined]
             except Exception:
                 pass
 

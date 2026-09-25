@@ -13,6 +13,10 @@ struct ContentView: View {
                 .tabItem { Label("Queue", systemImage: "list.bullet") }
             LibraryView()
                 .tabItem { Label("Library", systemImage: "books.vertical") }
+            StatsView()
+                .tabItem { Label("Insights", systemImage: "chart.bar.xaxis") }
+            SubscriptionsView()
+                .tabItem { Label("Subscriptions", systemImage: "rss") }
         }
             .frame(minWidth: 880, minHeight: 580)
             .background(Theme.bg)
