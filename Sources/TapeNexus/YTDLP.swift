@@ -136,28 +136,9 @@ final class YTDLPController: @unchecked Sendable {
 
     @discardableResult
     func runSync(_ args: [String], timeout: TimeInterval = 60) -> (code: Int, out: String, err: String) {
-        let p = Process()
-        p.executableURL = binaryURL
-        p.arguments = args
-        let outPipe = Pipe(); let errPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardError = errPipe
-        do {
-            try p.run()
-        } catch {
-            return (-1, "", error.localizedDescription)
-        }
-        // timeout
-        let deadline = DispatchTime.now() + timeout
-        DispatchQueue.global().asyncAfter(deadline: deadline) { [weak p] in
-            if p?.isRunning == true { p?.terminate() }
-        }
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return (Int(p.terminationStatus),
-                String(data: outData, encoding: .utf8) ?? "",
-                String(data: errData, encoding: .utf8) ?? "")
+        let result = ProcessRunner.run(executable: binaryURL, arguments: args,
+                                       timeout: timeout)
+        return (result.code, result.out, result.err)
     }
 
     func currentVersion() -> String {

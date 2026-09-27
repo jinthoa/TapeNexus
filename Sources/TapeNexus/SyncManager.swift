@@ -151,7 +151,7 @@ final class SyncManager: ObservableObject {
     /// ASWebAuthenticationSession, and exchange the returned code for a new
     /// linked session via PKCE. Requires Manual Linking enabled in Supabase.
     func linkGoogle() async throws {
-        guard let token = session?.accessToken else { throw SyncError.noSession }
+        guard let token = await freshSession()?.accessToken else { throw SyncError.noSession }
         let verifier = Self.randomCodeVerifier()
         let challenge = Self.codeChallenge(for: verifier)
         let scheme = "tapenexus"
@@ -196,7 +196,7 @@ final class SyncManager: ObservableObject {
     /// Sets a password on an OAuth-only (Google) account so the user can also
     /// sign in with email + password. Both identities share one user_id.
     func setPassword(_ password: String) async throws {
-        guard let token = session?.accessToken else { throw SyncError.noSession }
+        guard let token = await freshSession()?.accessToken else { throw SyncError.noSession }
         var req = URLRequest(url: URL(string: "\(url)/auth/v1/user")!)
         req.httpMethod = "PUT"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -216,7 +216,7 @@ final class SyncManager: ObservableObject {
     /// Re-fetches the user object so `providers` reflects the just-linked
     /// identity, and re-publishes so the avatar menu updates live.
     func refreshUser() async {
-        guard let token = session?.accessToken else { return }
+        guard let token = await freshSession()?.accessToken else { return }
         var req = URLRequest(url: URL(string: "\(url)/auth/v1/user")!)
         req.httpMethod = "GET"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -245,8 +245,11 @@ final class SyncManager: ObservableObject {
         if data == nil, let fileData = try? Data(contentsOf: sessionURL) {
             data = fileData
             if let s = try? JSONDecoder().decode(SyncSession.self, from: fileData) {
-                if let enc = try? JSONEncoder().encode(s) { KeychainStore.save(enc) }
-                try? FileManager.default.removeItem(at: sessionURL)
+                // Keep the fallback until Keychain confirms the write. A
+                // locked/managed Keychain must not turn migration into logout.
+                if let enc = try? JSONEncoder().encode(s), KeychainStore.save(enc) {
+                    try? FileManager.default.removeItem(at: sessionURL)
+                }
             }
         }
         guard let data, let s = try? JSONDecoder().decode(SyncSession.self, from: data) else { return }
@@ -266,6 +269,15 @@ final class SyncManager: ObservableObject {
             session = nil; saveSession(); isSignedIn = false; email = nil; return
         }
         try? applySession(json)
+    }
+
+    /// Refresh just before an authenticated request rather than waiting for a
+    /// 401 after the session's short-lived access token has expired.
+    private func freshSession() async -> SyncSession? {
+        guard let current = session else { return nil }
+        if Date().timeIntervalSince1970 <= current.expiresAt - 60 { return current }
+        await refresh()
+        return session
     }
 
     private func applySession(_ json: [String: Any]) throws {
@@ -317,7 +329,7 @@ final class SyncManager: ObservableObject {
 
     /// Push the local stats snapshot to this user's row (upsert).
     func pushAchievements(_ stats: AchievementStats) async {
-        guard let s = session else { return }
+        guard let s = await freshSession() else { return }
         guard let row = Self.achievementRow(for: s.user.id, stats: stats) else { return }
         pendingAchievementPushes.append((row, s.accessToken))
         guard !achievementPushInFlight else { return }
@@ -346,7 +358,7 @@ final class SyncManager: ObservableObject {
     /// Pull the user's server row and merge it into the local manager, then
     /// push the merged snapshot back so other devices converge.
     func pullAndMerge(into manager: AchievementsManager) async {
-        guard let s = session else { return }
+        guard let s = await freshSession() else { return }
         let requestedUserID = s.user.id
         var req = URLRequest(url: URL(string: "\(url)/rest/v1/achievements?select=*&limit=1")!)
         req.httpMethod = "GET"
@@ -368,7 +380,7 @@ final class SyncManager: ObservableObject {
     /// Fetch the top-100 public leaderboard (opt-in users only, safe columns
     /// only — backed by the `leaderboard` view, not the raw achievements table).
     func fetchLeaderboard() async -> [LeaderboardEntry] {
-        guard session != nil else { return [] }
+        guard await freshSession() != nil else { return [] }
         let rows = await getRows(path: "/rest/v1/leaderboard?select=user_id,display_name,score,total_completed&order=score.desc,total_completed.desc&limit=100")
         return rows.compactMap(Self.entry(from:))
     }
@@ -377,7 +389,7 @@ final class SyncManager: ObservableObject {
     /// strictly higher score + 1. Uses a ranged count query so it's exact even
     /// beyond the top-100. Returns nil if it can't be determined.
     func fetchMyRank(myScore: Int64) async -> Int? {
-        guard let s = session else { return nil }
+        guard let s = await freshSession() else { return nil }
         var req = URLRequest(url: URL(string: "\(url)/rest/v1/leaderboard?select=user_id&score=gt.\(myScore)")!)
         req.httpMethod = "GET"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -402,7 +414,7 @@ final class SyncManager: ObservableObject {
     /// "Near you" leaderboard view so players ranked outside the top-100 still
     /// see their neighbours. Approximate — ties are ordered by total_completed.
     func fetchNearMe(myScore: Int64) async -> (above: [LeaderboardEntry], meAndBelow: [LeaderboardEntry]) {
-        guard session != nil else { return ([], []) }
+        guard await freshSession() != nil else { return ([], []) }
         let cols = "user_id,display_name,score,total_completed"
         async let aboveData = getRows(path: "/rest/v1/leaderboard?select=\(cols)&score=gt.\(myScore)&order=score.asc,total_completed.asc&limit=4")
         async let belowData = getRows(path: "/rest/v1/leaderboard?select=\(cols)&score=lte.\(myScore)&order=score.desc,total_completed.desc&limit=5")
@@ -411,10 +423,11 @@ final class SyncManager: ObservableObject {
     }
 
     private func getRows(path: String) async -> [[String: Any]] {
+        guard let s = await freshSession() else { return [] }
         var req = URLRequest(url: URL(string: "\(url)\(path)")!)
         req.httpMethod = "GET"
         req.setValue(anonKey, forHTTPHeaderField: "apikey")
-        if let s = session { req.setValue("Bearer \(s.accessToken)", forHTTPHeaderField: "Authorization") }
+        req.setValue("Bearer \(s.accessToken)", forHTTPHeaderField: "Authorization")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
               let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
         return rows

@@ -59,33 +59,14 @@ final class GalleryDLController: @unchecked Sendable {
 
     @discardableResult
     func runSync(_ args: [String], timeout: TimeInterval = 60) -> (code: Int, out: String, err: String) {
-        let p = Process()
-        p.executableURL = binaryURL
-        p.arguments = args
         // Put the bundled bin dir first on PATH so a gallery-dl ffmpeg shelling
         // finds the seeded ffmpeg/ffprobe.
         var env = ProcessInfo.processInfo.environment
         let binPath = binDir.path
         env["PATH"] = binPath + ":" + (env["PATH"] ?? "/usr/bin:/bin")
-        p.environment = env
-        let outPipe = Pipe(); let errPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardError = errPipe
-        do {
-            try p.run()
-        } catch {
-            return (-1, "", error.localizedDescription)
-        }
-        let deadline = DispatchTime.now() + timeout
-        DispatchQueue.global().asyncAfter(deadline: deadline) { [weak p] in
-            if p?.isRunning == true { p?.terminate() }
-        }
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return (Int(p.terminationStatus),
-                String(data: outData, encoding: .utf8) ?? "",
-                String(data: errData, encoding: .utf8) ?? "")
+        let result = ProcessRunner.run(executable: binaryURL, arguments: args,
+                                       environment: env, timeout: timeout)
+        return (result.code, result.out, result.err)
     }
 
     func currentVersion() -> String {

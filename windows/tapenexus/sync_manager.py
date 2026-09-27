@@ -254,11 +254,13 @@ class SyncManager(QObject):
             return
         self._session = s
         if migrated:
-            _cred_write(blob)
-            try:
-                os.remove(self._session_path)
-            except OSError:
-                pass
+            # Do not delete the fallback until Credential Manager accepted the
+            # write; a managed machine can refuse it.
+            if _cred_write(blob):
+                try:
+                    os.remove(self._session_path)
+                except OSError:
+                    pass
         now = datetime.now(timezone.utc).timestamp()
         if now > float(s.get("expires_at", 0)) - 60:
             threading.Thread(target=self._refresh, daemon=True).start()
@@ -277,6 +279,16 @@ class SyncManager(QObject):
             self._session = None
             self._clear_session()
             self._set_signed_in(False)
+
+    def _fresh_bearer(self) -> Optional[str]:
+        """Refresh shortly before authenticated work, before an expired access
+        token turns into an avoidable 401."""
+        if not self._session:
+            return None
+        if datetime.now(timezone.utc).timestamp() > float(
+                self._session.get("expires_at", 0)) - 60:
+            self._refresh()
+        return self._bearer()
 
     # ── public auth (each spawns a worker thread) ──────────────────────────
     def sign_up(self, email: str, password: str) -> None:
@@ -377,7 +389,8 @@ class SyncManager(QObject):
 
     def _do_link_google(self) -> None:
         try:
-            if not self._session:
+            token = self._fresh_bearer()
+            if not token:
                 raise SyncError("Not signed in.")
             verifier = _b64url(secrets.token_bytes(32))
             challenge = _b64url(hashlib.sha256(verifier.encode("utf-8")).digest())
@@ -393,7 +406,7 @@ class SyncManager(QObject):
             # The endpoint needs the bearer token, so fetch it ourselves and
             # stop at the 302 to grab Google's consent URL (no secret in it).
             google_url = _capture_redirect(
-                link_url, self._headers(self._session["access_token"]))
+                link_url, self._headers(token))
             if not google_url:
                 raise SyncError("Could not start Google linking.")
             code = _wait_for_callback(LOOPBACK_PORT, google_url, timeout=180)
@@ -416,10 +429,11 @@ class SyncManager(QObject):
 
     def _do_set_password(self, password: str) -> None:
         try:
-            if not self._session:
+            token = self._fresh_bearer()
+            if not token:
                 raise SyncError("Not signed in.")
             self._auth_request("PUT", "user", {"password": password},
-                               bearer=self._session["access_token"])
+                               bearer=token)
             self._refresh_user()
             self.auth_done.emit(True)
         except SyncError as e:
@@ -429,11 +443,12 @@ class SyncManager(QObject):
 
     def _refresh_user(self) -> None:
         """Re-fetch the user so `providers` reflects a just-linked identity."""
-        if not self._session:
+        token = self._fresh_bearer()
+        if not token:
             return
         try:
             user = self._auth_request("GET", "user", None,
-                                      bearer=self._session["access_token"])
+                                      bearer=token)
             if user and isinstance(user, dict):
                 provs = _providers_from_user(user)
                 if self._session.get("user"):
@@ -478,8 +493,7 @@ class SyncManager(QObject):
         if not self._is_signed_in:
             return
         row = self._row_from_stats(stats)
-        token = self._bearer()
-        self._push_queue.put((row, token))
+        self._push_queue.put((row, None))
 
     def _push_loop(self) -> None:
         while True:
@@ -491,6 +505,10 @@ class SyncManager(QObject):
 
     def _do_push(self, row: dict, token) -> None:
         try:
+            if row.get("user_id") == self._uid():
+                token = self._fresh_bearer()
+            if not token:
+                return
             url = f"{self._url}/rest/v1/achievements?on_conflict=user_id"
             data = json.dumps(row).encode("utf-8")
             headers = self._headers(token)
@@ -506,13 +524,15 @@ class SyncManager(QObject):
         if not self._is_signed_in:
             return
         requested_uid = self._uid()
-        token = self._bearer()
         threading.Thread(target=self._do_pull,
-                         args=(requested_uid, token, achievements_manager),
+                         args=(requested_uid, achievements_manager),
                          daemon=True).start()
 
-    def _do_pull(self, requested_uid, token, target) -> None:
+    def _do_pull(self, requested_uid, target) -> None:
         try:
+            token = self._fresh_bearer()
+            if not token:
+                return
             url = f"{self._url}/rest/v1/achievements?select=*&limit=1"
             req = urllib.request.Request(url, headers=self._headers(token), method="GET")
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -602,10 +622,13 @@ class SyncManager(QObject):
         if not self._is_signed_in:
             return []
         try:
+            token = self._fresh_bearer()
+            if not token:
+                return []
             url = (f"{self._url}/rest/v1/leaderboard"
                    f"?select=user_id,display_name,score,total_completed"
                    f"&order=score.desc,total_completed.desc&limit=100")
-            req = urllib.request.Request(url, headers=self._headers(self._bearer()),
+            req = urllib.request.Request(url, headers=self._headers(token),
                                          method="GET")
             with urllib.request.urlopen(req, timeout=30) as r:
                 return json.loads(r.read().decode("utf-8") or "[]")
@@ -618,9 +641,12 @@ class SyncManager(QObject):
         if not self._is_signed_in:
             return None
         try:
+            token = self._fresh_bearer()
+            if not token:
+                return None
             url = (f"{self._url}/rest/v1/leaderboard"
                    f"?select=user_id&score=gt.{int(my_score)}")
-            headers = self._headers(self._bearer(), json_body=False)
+            headers = self._headers(token, json_body=False)
             headers["Prefer"] = "count=exact"
             headers["Range"] = "0-0"
             req = urllib.request.Request(url, headers=headers, method="GET")
@@ -646,11 +672,14 @@ class SyncManager(QObject):
             return empty
         score = int(my_score)
         try:
+            token = self._fresh_bearer()
+            if not token:
+                return empty
             above_url = (
                 f"{self._url}/rest/v1/leaderboard"
                 f"?select=user_id,display_name,score,total_completed"
                 f"&score=gt.{score}&order=score.asc,total_completed.asc&limit=4")
-            req = urllib.request.Request(above_url, headers=self._headers(self._bearer()),
+            req = urllib.request.Request(above_url, headers=self._headers(token),
                                          method="GET")
             with urllib.request.urlopen(req, timeout=30) as r:
                 above = json.loads(r.read().decode("utf-8") or "[]")
@@ -658,7 +687,7 @@ class SyncManager(QObject):
                 f"{self._url}/rest/v1/leaderboard"
                 f"?select=user_id,display_name,score,total_completed"
                 f"&score=lte.{score}&order=score.desc,total_completed.desc&limit=5")
-            req = urllib.request.Request(below_url, headers=self._headers(self._bearer()),
+            req = urllib.request.Request(below_url, headers=self._headers(token),
                                          method="GET")
             with urllib.request.urlopen(req, timeout=30) as r:
                 below = json.loads(r.read().decode("utf-8") or "[]")
