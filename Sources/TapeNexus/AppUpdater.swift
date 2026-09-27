@@ -11,9 +11,8 @@ struct AppUpdateStatus: Equatable {
 }
 
 /// Checks GitHub for a newer Tape Nexus release and, on manual request,
-/// downloads the `.pkg` asset, installs it with admin privileges (system
-/// password prompt), then quits and relaunches the new version so the update
-/// takes over in place (the yt-dlp updater only updates the bundled binary).
+/// downloads the `.pkg` asset and opens it in macOS Installer. Installer owns
+/// any needed authorization, replacement, and postinstall relaunch.
 /// On-launch checks are notify-only until the user picks Download and install.
 final class AppUpdater {
     static let repo = "jinthoa/TapeNexus"
@@ -83,8 +82,8 @@ final class AppUpdater {
                          state: .failed, message: "Bad download URL."))
             return
         }
-        // Download + install off the main thread: the install blocks on the
-        // system admin-password dialog and the installer run.
+        // Download off the main thread, then hand the signed package to
+        // Installer on the main thread.
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
             guard let data = try? Data(contentsOf: url) else {
@@ -106,60 +105,15 @@ final class AppUpdater {
                                   state: .failed, message: "Could not save installer: \(error.localizedDescription)"))
                 return
             }
-            // Install silently with admin privileges (the system shows a Mac
-            // password dialog), then quit + relaunch so the new version takes
-            // over in place — no manual Installer walk-through or relaunch.
-            self.report(.init(currentVersion: self.currentVersion, latestVersion: tag,
-                              state: .downloading,
-                              message: "Installing Tape Nexus \(tag)… (enter your Mac password)"))
-            if !self.runPrivilegedInstall(pkg: dest) {
+            DispatchQueue.main.async {
+                let opened = NSWorkspace.shared.open(dest)
+                let message = opened
+                    ? "Opened Installer for Tape Nexus \(tag)."
+                    : "Saved \(dest.lastPathComponent) to Downloads — double-click it to install."
                 self.report(.init(currentVersion: self.currentVersion, latestVersion: tag,
-                                  state: .failed,
-                                  message: "Install cancelled or failed. \(dest.lastPathComponent) is in Downloads — double-click it to install manually."))
-                return
+                                  state: opened ? .ready : .failed, message: message))
             }
-            self.report(.init(currentVersion: self.currentVersion, latestVersion: tag,
-                              state: .ready, message: "Tape Nexus \(tag) installed — relaunching…"))
-            self.relaunchAndQuit()
         }
-    }
-
-    /// Run `installer -pkg <pkg> -target /` with administrator privileges via
-    /// `osascript`, which surfaces the native macOS admin-password dialog.
-    /// Returns true on a successful (exit 0) install, false if the user cancelled
-    /// the prompt or the installer failed.
-    private func runPrivilegedInstall(pkg: URL) -> Bool {
-        // Shell-single-quote the path, then embed the whole shell command in an
-        // AppleScript double-quoted string (escaping \ and ").
-        let shellSingle = pkg.path.replacingOccurrences(of: "'", with: "'\\''")
-        let shellCmd = "installer -pkg '\(shellSingle)' -target /"
-        let asString = shellCmd
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let asLine = "do shell script \"\(asString)\" with administrator privileges"
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        p.arguments = ["-e", asLine]
-        p.standardOutput = Pipe()
-        p.standardError = Pipe()
-        do { try p.run() } catch { return false }
-        p.waitUntilExit()
-        return p.terminationStatus == 0
-    }
-
-    /// Spawn a detached `sleep 3; open /Applications/TapeNexus.app` (reparented
-    /// to launchd when we exit, so it survives our termination), then quit. The
-    /// pkg always installs to /Applications/TapeNexus.app, so that's the path to
-    /// relaunch. The 3s grace lets the old process fully terminate before the
-    /// new bundle is opened.
-    private func relaunchAndQuit() {
-        let appPath = "/Applications/TapeNexus.app"
-        let quoted = appPath.replacingOccurrences(of: "'", with: "'\\''")
-        let relaunch = Process()
-        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
-        relaunch.arguments = ["-c", "sleep 3; open '\(quoted)'"]
-        try? relaunch.run()
-        DispatchQueue.main.async { NSApp.terminate(nil) }
     }
 
     private func report(_ s: AppUpdateStatus) {
